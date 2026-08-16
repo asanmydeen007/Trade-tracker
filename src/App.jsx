@@ -38,11 +38,40 @@ export default function App() {
   const [syncStatus, setSyncStatus] = useState("fallback"); // notion | fallback | loading | error
   const [syncedAt, setSyncedAt] = useState(null);
   const [syncError, setSyncError] = useState(null);
+  const [btcAi, setBtcAi] = useState(null);
+  const [btcAiLoading, setBtcAiLoading] = useState(false);
+  const [btcAiError, setBtcAiError] = useState(null);
 
   // Theme
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
   }, [dark]);
+
+  // Claude / AI BTC analysis (cached ~4h server-side)
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setBtcAiLoading(true);
+      try {
+        const res = await fetch("/api/btc-analysis");
+        const data = await res.json();
+        if (cancelled) return;
+        if (!res.ok) throw new Error(data?.error || "Failed to load analysis");
+        setBtcAi(data);
+        setBtcAiError(null);
+      } catch (e) {
+        if (!cancelled) setBtcAiError(String(e?.message || e));
+      } finally {
+        if (!cancelled) setBtcAiLoading(false);
+      }
+    };
+    load();
+    const id = setInterval(load, 4 * 60 * 60 * 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
 
   // Live trades from Notion (via /api/trades)
   useEffect(() => {
@@ -812,7 +841,8 @@ export default function App() {
             )}
 
             {section === "plan" && (
-              <motion.div key="plan" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="card p-4">
+              <motion.div key="plan" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
+              <div className="card p-4">
                 <div className="flex items-center justify-between mb-4">
                   <div className="text-sm font-semibold">Trading Plan · BTCUSDT</div>
                   {tradingPlan?.updatedAt && (
@@ -868,6 +898,64 @@ export default function App() {
                 ) : (
                   <div className="text-sm text-slate-500 py-6 text-center">Loading trading plan…</div>
                 )}
+              </div>
+
+              <div className="card p-4">
+                <div className="flex items-center justify-between mb-4 gap-2">
+                  <div className="flex items-center gap-2">
+                    <div className="text-sm font-semibold">AI Trading Plan · BTC</div>
+                    <span className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-600 dark:text-indigo-300 border border-indigo-500/20">
+                      AI
+                    </span>
+                  </div>
+                  {btcAi?.generatedAt && (
+                    <div className="text-[11px] text-slate-500 shrink-0">
+                      Updated {new Date(btcAi.generatedAt).toLocaleString("en-IN", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                      {btcAi.source === "claude" ? " · Claude" : " · rules engine"}
+                    </div>
+                  )}
+                </div>
+
+                {btcAiLoading && !btcAi && (
+                  <div className="text-sm text-slate-500 py-6 text-center">Loading AI analysis…</div>
+                )}
+                {btcAiError && !btcAi && (
+                  <div className="text-sm text-red-500 py-4 text-center">{btcAiError}</div>
+                )}
+                {btcAi && (
+                  <>
+                    <div className="grid grid-cols-3 gap-3 mb-4">
+                      <div className="rounded-xl bg-slate-100 dark:bg-slate-800/60 p-3">
+                        <div className="text-[10px] uppercase tracking-wide text-slate-500">Price</div>
+                        <div className="font-semibold text-sm mt-0.5">
+                          ${Number(btcAi.snapshot.price).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                        </div>
+                      </div>
+                      <div className="rounded-xl bg-slate-100 dark:bg-slate-800/60 p-3">
+                        <div className="text-[10px] uppercase tracking-wide text-slate-500">24h Change</div>
+                        <div className={`font-semibold text-sm mt-0.5 ${btcAi.snapshot.change24hPct >= 0 ? "positive" : "negative"}`}>
+                          {btcAi.snapshot.change24hPct >= 0 ? "+" : ""}
+                          {Number(btcAi.snapshot.change24hPct).toFixed(2)}%
+                        </div>
+                      </div>
+                      <div className="rounded-xl bg-slate-100 dark:bg-slate-800/60 p-3">
+                        <div className="text-[10px] uppercase tracking-wide text-slate-500">24h Range</div>
+                        <div className="font-semibold text-xs mt-0.5 leading-snug">
+                          ${Number(btcAi.snapshot.low24h).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                          {" – "}
+                          ${Number(btcAi.snapshot.high24h).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="text-sm leading-relaxed text-slate-700 dark:text-slate-300 whitespace-pre-line">
+                      {btcAi.analysis}
+                    </div>
+                    <div className="mt-4 p-3 rounded-xl text-xs bg-slate-100 dark:bg-slate-800/60 text-slate-600 dark:text-slate-400">
+                      Regenerates about every 4 hours. Not financial advice — use with your own risk rules.
+                    </div>
+                  </>
+                )}
+              </div>
               </motion.div>
             )}
           </AnimatePresence>
