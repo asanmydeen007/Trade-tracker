@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  AreaChart, Area, PieChart, Pie, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, Legend
+  AreaChart, Area, PieChart, Pie, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, Legend
 } from "recharts";
 import { Menu, X, Sun, Moon, ChevronLeft, ChevronRight } from "lucide-react";
 import { TRADES, PAIR_COLORS, PAIR_ICONS, SECTIONS } from "./data";
@@ -144,6 +144,21 @@ export default function App() {
       abs: Math.abs(value),
       color: PAIR_COLORS[name] || "#64748b",
     }));
+  }, [filtered]);
+
+  // Daily PnL
+  const dailyData = useMemo(() => {
+    const map = {};
+    filtered.forEach((t) => {
+      map[t.date] = (map[t.date] || 0) + t.pnl;
+    });
+    return Object.keys(map)
+      .sort()
+      .map((date) => ({
+        date,
+        label: new Date(date).toLocaleDateString("en-IN", { day: "numeric", month: "short" }),
+        pnl: map[date],
+      }));
   }, [filtered]);
 
   // Calendar
@@ -385,6 +400,45 @@ export default function App() {
                     </div>
                   </motion.div>
                 </div>
+
+                {/* Daily PnL */}
+                <motion.div
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.28 }}
+                  className="card p-4"
+                >
+                  <div className="text-sm font-semibold mb-3">Daily PnL</div>
+                  <div className="h-52 lg:h-64">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={dailyData}>
+                        <XAxis
+                          dataKey="label"
+                          tick={{ fill: dark ? "#94a3b8" : "#64748b", fontSize: 11 }}
+                          axisLine={false}
+                          tickLine={false}
+                        />
+                        <YAxis
+                          tick={{ fill: dark ? "#94a3b8" : "#64748b", fontSize: 11 }}
+                          axisLine={false}
+                          tickLine={false}
+                          tickFormatter={(v) => `$${v}`}
+                        />
+                        <Tooltip
+                          contentStyle={tooltipStyle}
+                          itemStyle={{ color: dark ? "#f1f5f9" : "#0f172a" }}
+                          formatter={(v) => [formatPnl(v), "PnL"]}
+                          labelFormatter={(_, payload) => payload?.[0]?.payload?.date || ""}
+                        />
+                        <Bar dataKey="pnl" radius={[6, 6, 0, 0]} maxBarSize={48}>
+                          {dailyData.map((entry, i) => (
+                            <Cell key={i} fill={entry.pnl >= 0 ? "#22c55e" : "#ef4444"} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </motion.div>
 
                 {/* Calendar */}
                 <motion.div
