@@ -5,7 +5,7 @@ import {
 } from "recharts";
 import { Menu, X, Sun, Moon, ChevronLeft, ChevronRight } from "lucide-react";
 import { TRADES, PAIR_COLORS, PAIR_ICONS, SECTIONS } from "./data";
-import AnalysisPanel from "./AnalysisPanel";
+import PlanLab from "./PlanLab";
 import clsx from "clsx";
 
 const USD_RATE = 95.55;
@@ -28,6 +28,10 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [pairFilter, setPairFilter] = useState("all");
   const [resultFilter, setResultFilter] = useState("all");
+  const _now = new Date();
+  const _curMonth = `${_now.getFullYear()}-${String(_now.getMonth() + 1).padStart(2, "0")}`;
+  const [monthFilter, setMonthFilter] = useState(_curMonth);
+  const [tradeLimit, setTradeLimit] = useState(10);
   const [btcPrice, setBtcPrice] = useState(null);
   const [calMonth, setCalMonth] = useState(new Date().getMonth());
   const [calYear, setCalYear] = useState(new Date().getFullYear());
@@ -309,14 +313,28 @@ export default function App() {
     fetchNews();
   }, []);
 
+  const monthOptions = useMemo(() => {
+    const set = new Set(trades.map((t) => (t.date || "").slice(0, 7)).filter(Boolean));
+    const cur = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, "0")}`;
+    set.add(cur);
+    return Array.from(set).sort().reverse();
+  }, [trades]);
+
   const filtered = useMemo(() => {
     return trades.filter((t) => {
       if (pairFilter !== "all" && t.pair !== pairFilter) return false;
       if (resultFilter === "Win" && t.pnl < 0) return false;
       if (resultFilter === "Loss" && t.pnl >= 0) return false;
+      if (monthFilter !== "all" && !(t.date || "").startsWith(monthFilter)) return false;
       return true;
     });
-  }, [trades, pairFilter, resultFilter]);
+  }, [trades, pairFilter, resultFilter, monthFilter]);
+
+  const visibleTrades = useMemo(() => filtered.slice(0, tradeLimit), [filtered, tradeLimit]);
+
+  useEffect(() => {
+    setTradeLimit(10);
+  }, [pairFilter, resultFilter, monthFilter]);
 
   const totalPnl = filtered.reduce((s, t) => s + t.pnl, 0);
   const wins = filtered.filter((t) => t.pnl > 0).length;
@@ -743,12 +761,18 @@ export default function App() {
                         <option value="Win">Win</option>
                         <option value="Loss">Loss</option>
                       </select>
+                      <select value={monthFilter} onChange={(e) => setMonthFilter(e.target.value)} className="rounded-lg px-2.5 py-1.5 text-xs border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900">
+                        <option value="all">All months</option>
+                        {monthOptions.map((m) => (
+                          <option key={m} value={m}>{m}</option>
+                        ))}
+                      </select>
                     </div>
                   </div>
 
                   <div className="divide-y divide-slate-200 dark:divide-slate-800">
                     <AnimatePresence>
-                      {filtered.map((t, i) => (
+                      {visibleTrades.map((t, i) => (
                         <motion.div
                           key={t.id}
                           initial={{ opacity: 0, x: -8 }}
@@ -792,6 +816,18 @@ export default function App() {
                     </AnimatePresence>
                     {filtered.length === 0 && (
                       <div className="py-10 text-center text-slate-500 text-sm">No trades match filters</div>
+                    )}
+                    {filtered.length > tradeLimit && (
+                      <button
+                        type="button"
+                        onClick={() => setTradeLimit((n) => n + 10)}
+                        className="w-full mt-3 py-2.5 rounded-xl text-xs font-semibold border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 transition"
+                      >
+                        View more ({filtered.length - tradeLimit} left)
+                      </button>
+                    )}
+                    {filtered.length > 0 && filtered.length <= tradeLimit && filtered.length > 10 && (
+                      <div className="text-center text-[11px] text-slate-500 mt-2">Showing all {filtered.length} trades</div>
                     )}
                   </div>
                 </motion.div>
@@ -887,132 +923,14 @@ export default function App() {
               </motion.div>
             )}
 
-            {section === "plan" && (
-              <motion.div key="plan" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
-              <div className="card p-4">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="text-sm font-semibold">Trading Plan · BTCUSDT</div>
-                  {tradingPlan?.updatedAt && (
-                    <div className="text-[11px] text-slate-500">
-                      Updated {tradingPlan.updatedAt} · every 4h
-                    </div>
-                  )}
-                </div>
-                {tradingPlan ? (
-                  <>
-                    <div className="grid sm:grid-cols-2 gap-4 text-sm">
-                      <div>
-                        <div className="text-xs text-slate-500 mb-1">Bias</div>
-                        <div className="font-medium">{tradingPlan.bias}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-slate-500 mb-1">Entry Idea</div>
-                        <div className="font-medium">{tradingPlan.entry}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-slate-500 mb-1">Support</div>
-                        <div className="flex flex-wrap gap-2 mt-1">
-                          {tradingPlan.support.map((l) => (
-                            <span key={l} className="px-2.5 py-1 rounded-md text-xs font-semibold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">{l}</span>
-                          ))}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-slate-500 mb-1">Resistance</div>
-                        <div className="flex flex-wrap gap-2 mt-1">
-                          {tradingPlan.resistance.map((l) => (
-                            <span key={l} className="px-2.5 py-1 rounded-md text-xs font-semibold bg-red-500/15 text-red-600 dark:text-red-400">{l}</span>
-                          ))}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-slate-500 mb-1">Stop Loss</div>
-                        <div className="font-medium negative">{tradingPlan.stop}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-slate-500 mb-1">Take Profit</div>
-                        <div className="space-y-0.5 font-medium positive">
-                          {tradingPlan.tps.map((tp) => (
-                            <div key={tp}>{tp}</div>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="mt-4 p-3 rounded-xl text-xs bg-slate-100 dark:bg-slate-800/60 text-slate-600 dark:text-slate-400">
-                      {tradingPlan.note}
-                    </div>
-                  </>
-                ) : (
-                  <div className="text-sm text-slate-500 py-6 text-center">Loading trading plan…</div>
-                )}
-              </div>
-
-              <div className="card p-4">
-                <div className="flex items-center justify-between mb-4 gap-2">
-                  <div className="flex items-center gap-2">
-                    <div className="text-sm font-semibold">Claude AI Analysis — BTC</div>
-                    <span className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-600 dark:text-indigo-300 border border-indigo-500/20">
-                      AI
-                    </span>
-                  </div>
-                  {btcAi?.generatedAt && (
-                    <div className="text-[11px] text-slate-500 shrink-0">
-                      Updated {new Date(btcAi.generatedAt).toLocaleString("en-IN", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
-                      {btcAi.source === "claude" ? " · Claude" : " · rules engine"}
-                    </div>
-                  )}
-                </div>
-
-                {btcAiLoading && !btcAi && (
-                  <div className="text-sm text-slate-500 py-6 text-center">Loading AI analysis…</div>
-                )}
-                {btcAiError && !btcAi && (
-                  <div className="text-sm text-red-500 py-4 text-center">{btcAiError}</div>
-                )}
-                {btcAi && (
-                  <>
-                    <div className="grid grid-cols-3 gap-3 mb-4">
-                      <div className="rounded-xl bg-slate-100 dark:bg-slate-800/60 p-3">
-                        <div className="text-[10px] uppercase tracking-wide text-slate-500">Price</div>
-                        <div className="font-semibold text-sm mt-0.5">
-                          ${Number(btcAi.snapshot.price).toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                        </div>
-                      </div>
-                      <div className="rounded-xl bg-slate-100 dark:bg-slate-800/60 p-3">
-                        <div className="text-[10px] uppercase tracking-wide text-slate-500">24h Change</div>
-                        <div className={`font-semibold text-sm mt-0.5 ${btcAi.snapshot.change24hPct >= 0 ? "positive" : "negative"}`}>
-                          {btcAi.snapshot.change24hPct >= 0 ? "+" : ""}
-                          {Number(btcAi.snapshot.change24hPct).toFixed(2)}%
-                        </div>
-                      </div>
-                      <div className="rounded-xl bg-slate-100 dark:bg-slate-800/60 p-3">
-                        <div className="text-[10px] uppercase tracking-wide text-slate-500">24h Range</div>
-                        <div className="font-semibold text-xs mt-0.5 leading-snug">
-                          ${Number(btcAi.snapshot.low24h).toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                          {" – "}
-                          ${Number(btcAi.snapshot.high24h).toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="text-sm leading-relaxed text-slate-700 dark:text-slate-300 whitespace-pre-line">
-                      {btcAi.analysis}
-                    </div>
-                    <div className="mt-4 p-3 rounded-xl text-xs bg-slate-100 dark:bg-slate-800/60 text-slate-600 dark:text-slate-400">
-                      Regenerates about every 4 hours. Not financial advice — use with your own risk rules.
-                    </div>
-                  </>
-                )}
-              </div>
-              </motion.div>
-            )}
-            {section === "analysis" && (
+                        {section === "plan" && (
               <motion.div
-                key="analysis"
+                key="plan"
                 initial={{ opacity: 0, y: 12 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -8 }}
               >
-                <AnalysisPanel />
+                <PlanLab />
               </motion.div>
             )}
           </AnimatePresence>
