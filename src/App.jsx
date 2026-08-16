@@ -37,6 +37,7 @@ export default function App() {
   const [trades, setTrades] = useState(TRADES);
   const [syncStatus, setSyncStatus] = useState("fallback"); // notion | fallback | loading | error
   const [syncedAt, setSyncedAt] = useState(null);
+  const [syncError, setSyncError] = useState(null);
 
   // Theme
   useEffect(() => {
@@ -50,17 +51,32 @@ export default function App() {
       setSyncStatus((s) => (s === "notion" ? "notion" : "loading"));
       try {
         const res = await fetch("/api/trades");
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
         if (cancelled) return;
         if (res.ok && Array.isArray(data.trades) && data.trades.length) {
           setTrades(data.trades);
           setSyncStatus("notion");
           setSyncedAt(data.syncedAt || new Date().toISOString());
+          setSyncError(null);
+        } else if (data?.source === "missing_token") {
+          setSyncStatus("fallback");
+          setSyncError("Add NOTION_TOKEN in Vercel env");
         } else {
-          setSyncStatus(data?.source === "missing_token" ? "fallback" : "error");
+          setSyncStatus("error");
+          let msg = data?.hint || "";
+          try {
+            const e = typeof data?.error === "string" ? JSON.parse(data.error) : data?.error;
+            msg = msg || e?.message || data?.error || `HTTP ${res.status}`;
+          } catch {
+            msg = msg || data?.error || `HTTP ${res.status}`;
+          }
+          setSyncError(String(msg).slice(0, 160));
         }
-      } catch {
-        if (!cancelled) setSyncStatus("error");
+      } catch (e) {
+        if (!cancelled) {
+          setSyncStatus("error");
+          setSyncError(String(e?.message || e));
+        }
       }
     };
     load();
@@ -396,6 +412,11 @@ export default function App() {
                 {syncStatus === "fallback" && "Offline snapshot (add NOTION_TOKEN for live)"}
                 {syncStatus === "error" && "Notion sync failed — using snapshot"}
               </p>
+              {syncStatus === "error" && syncError && (
+                <p className="text-[10px] text-amber-600 dark:text-amber-400 max-w-xs truncate" title={syncError}>
+                  {syncError}
+                </p>
+              )}
             </div>
           </div>
           <button
