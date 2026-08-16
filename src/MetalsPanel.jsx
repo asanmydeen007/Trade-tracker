@@ -38,7 +38,7 @@ function MetalCard({ data }) {
       {/* Primary: India per gram */}
       <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-4">
         <div className="text-[10px] uppercase tracking-wide text-emerald-700 dark:text-emerald-300 font-semibold">
-          1 gram · India indicative {isGold ? "24K" : ""}
+          1 gram · India board (ex-GST) {isGold ? "24K" : ""}
         </div>
         <div className="mt-1 flex flex-wrap items-baseline gap-3">
           <div className="text-2xl font-bold text-slate-900 dark:text-white">
@@ -49,7 +49,7 @@ function MetalCard({ data }) {
         <div className="mt-2 text-[11px] text-slate-500">
           ≈ ₹{fmt(data.per10gInrIndia, 0)} per 10g
           {data.indiaPremiumPct != null && (
-            <span> · includes ~{data.indiaPremiumPct}% local premium vs pure spot</span>
+            <span> · ~{data.indiaPremiumPct}% local premium vs intl spot · rates shown without GST</span>
           )}
         </div>
       </div>
@@ -136,8 +136,9 @@ export default function MetalsPanel() {
       </div>
 
       <div className="card p-3 text-[11px] text-slate-500 leading-relaxed">
-        Indian jeweller boards (e.g. ~₹14,200/g gold, ~₹250/g silver) include <span className="font-medium text-slate-700 dark:text-slate-300">GST + local premium</span> over international spot.
-        We show <span className="font-medium text-slate-700 dark:text-slate-300">spot</span> and an <span className="font-medium text-slate-700 dark:text-slate-300">India indicative</span> gram rate so both match what you see online.
+        Indian board rates (e.g. ~₹14,200/g gold, ~₹250/g silver) are typically <span className="font-medium text-slate-700 dark:text-slate-300">without GST</span>.
+        Difference vs international spot is mostly <span className="font-medium text-slate-700 dark:text-slate-300">local premium</span>.
+        GST is added at purchase by the seller. We show pure spot and an India board-style gram rate (ex-GST).
       </div>
 
       {err && <div className="card p-4 text-sm text-red-500">{err}</div>}
