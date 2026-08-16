@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  AreaChart, Area, PieChart, Pie, BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Cell, Legend
+  AreaChart, Area, PieChart, Pie, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, Legend
 } from "recharts";
 import { Menu, X, Sun, Moon, ChevronLeft, ChevronRight } from "lucide-react";
 import { TRADES, PAIR_COLORS, PAIR_ICONS, SECTIONS } from "./data";
@@ -189,6 +189,18 @@ export default function App() {
     window.__toastTimer = setTimeout(() => setToast(null), 2200);
   };
 
+  // Borderless tooltip that sits inside the chart
+  const tooltipStyle = {
+    backgroundColor: dark ? "#1e293b" : "#ffffff",
+    border: "none",
+    borderRadius: 12,
+    fontSize: 13,
+    fontWeight: 500,
+    color: dark ? "#f1f5f9" : "#0f172a",
+    boxShadow: "0 8px 30px rgba(0,0,0,0.35)",
+    padding: "10px 14px",
+  };
+
   return (
     <div className="flex min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100">
       {/* Toast */}
@@ -365,21 +377,13 @@ export default function App() {
                           </defs>
                           <XAxis dataKey="date" tick={{ fill: dark ? "#94a3b8" : "#64748b", fontSize: 11 }} axisLine={false} tickLine={false} />
                           <YAxis tick={{ fill: dark ? "#94a3b8" : "#64748b", fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${v}`} />
-<Area
-                            type="monotone"
-                            dataKey="pnl"
-                            stroke="#ef4444"
-                            fill="url(#pnlGrad)"
-                            strokeWidth={2}
-                            activeDot={{
-                              r: 6,
-                              onClick: (e, payload) => {
-                                const p = payload?.payload;
-                                if (p) showToast(`${p.date}  PnL : ${formatPnl(p.pnl)}`);
-                              },
-                              style: { cursor: "pointer" }
-                            }}
+                          <Tooltip
+                            contentStyle={tooltipStyle}
+                            itemStyle={{ color: dark ? "#f1f5f9" : "#0f172a" }}
+                            formatter={(v) => [formatPnl(v), "PnL"]}
+                            cursor={{ stroke: dark ? "#475569" : "#cbd5e1", strokeWidth: 1 }}
                           />
+                          <Area type="monotone" dataKey="pnl" stroke="#ef4444" fill="url(#pnlGrad)" strokeWidth={2} />
                         </AreaChart>
                       </ResponsiveContainer>
                     </div>
@@ -404,20 +408,20 @@ export default function App() {
                             innerRadius={55}
                             outerRadius={85}
                             paddingAngle={3}
-                            onClick={(data) => {
-                              if (!data) return;
-                              const name = data.name || data.payload?.name;
-                              const raw = pairData.find(p => p.name === name);
-                              const val = raw ? raw.pnl : (data.value ?? data.payload?.pnl ?? 0);
-                              if (name) showToast(`${name} : ${formatPnl(Number(val) || 0)}`);
-                            }}
-                            style={{ cursor: "pointer" }}
                           >
                             {pairData.map((entry, i) => (
                               <Cell key={i} fill={entry.color} />
                             ))}
                           </Pie>
-<Legend
+                          <Tooltip
+                            contentStyle={tooltipStyle}
+                            itemStyle={{ color: dark ? "#f1f5f9" : "#0f172a" }}
+                            formatter={(value, name, props) => {
+                              const pnl = props?.payload?.pnl ?? props?.payload?.value ?? value;
+                              return [formatPnl(Number(pnl) || 0), props?.payload?.name || name];
+                            }}
+                          />
+                          <Legend
                             verticalAlign="bottom"
                             height={36}
                             formatter={(value) => <span style={{ color: dark ? "#94a3b8" : "#64748b", fontSize: 12 }}>{value}</span>}
@@ -451,19 +455,14 @@ export default function App() {
                           tickLine={false}
                           tickFormatter={(v) => `$${v}`}
                         />
-<Bar
-                          dataKey="pnl"
-                          radius={[6, 6, 0, 0]}
-                          maxBarSize={48}
-                          onClick={(data) => {
-                            if (!data) return;
-                            const d = data.payload || data;
-                            const label = d.date || d.label || "";
-                            const val = Number(d.pnl) || 0;
-                            showToast(`${label}  PnL : ${formatPnl(val)}`);
-                          }}
-                          style={{ cursor: "pointer" }}
-                        >
+                        <Tooltip
+                          contentStyle={tooltipStyle}
+                          itemStyle={{ color: dark ? "#f1f5f9" : "#0f172a" }}
+                          formatter={(v) => [formatPnl(v), "PnL"]}
+                          labelFormatter={(_, payload) => payload?.[0]?.payload?.date || ""}
+                          cursor={{ fill: dark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.04)" }}
+                        />
+                        <Bar dataKey="pnl" radius={[6, 6, 0, 0]} maxBarSize={48}>
                           {dailyData.map((entry, i) => (
                             <Cell key={i} fill={entry.pnl >= 0 ? "#22c55e" : "#ef4444"} />
                           ))}
