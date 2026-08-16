@@ -1,6 +1,6 @@
 /**
  * GET /api/grok-plan?symbol=BTCUSDT&interval=1h
- * Live levels + Grok narrative when XAI_API_KEY is set.
+ * Uses xAI Responses API (grok-4.6) when XAI_API_KEY is set.
  */
 function num(n, d = 2) {
   return Number(n).toLocaleString(undefined, { maximumFractionDigits: d });
@@ -44,7 +44,6 @@ async function market(symbol, interval) {
   };
 }
 
-/** Distinct Grok-style local write-up (not the same as Claude rules card). */
 function grokStyleLocal(s) {
   const above20 = s.price > s.ema20;
   const above50 = s.price > s.ema50;
@@ -74,7 +73,7 @@ If short: invalidation over $${num(shortSl)} · first target $${num(shortTp)}
 
 One rule: if price is stuck mid-range, skip. Edges only. Risk small.
 
-(Not financial advice. Local Grok-style plan until XAI_API_KEY is set.)`,
+(Not financial advice. Local plan until XAI_API_KEY has credits.)`,
     snapshot: {
       price: s.price,
       change24hPct: s.change24hPct,
@@ -84,6 +83,27 @@ One rule: if price is stuck mid-range, skip. Edges only. Risk small.
     source: "grok-local",
     generatedAt: new Date().toISOString(),
   };
+}
+
+function extractText(data) {
+  // Responses API shapes vary; try common fields
+  if (typeof data?.output_text === "string" && data.output_text.trim()) return data.output_text;
+  if (typeof data?.text === "string" && data.text.trim()) return data.text;
+  if (Array.isArray(data?.output)) {
+    const parts = [];
+    for (const item of data.output) {
+      if (typeof item?.content === "string") parts.push(item.content);
+      else if (Array.isArray(item?.content)) {
+        for (const c of item.content) {
+          if (typeof c?.text === "string") parts.push(c.text);
+          else if (typeof c === "string") parts.push(c);
+        }
+      } else if (typeof item?.text === "string") parts.push(item.text);
+    }
+    if (parts.length) return parts.join("\n");
+  }
+  if (data?.choices?.[0]?.message?.content) return data.choices[0].message.content;
+  return null;
 }
 
 export default async function handler(req, res) {
@@ -124,25 +144,45 @@ Write 140-220 words:
 
 Be direct. No hype. Not financial advice.`;
 
-    const models = ["grok-3", "grok-2-latest", "grok-2"];
+    // Prefer Responses API (grok-4.6), fallback to chat completions
     let analysis = null;
-    for (const model of models) {
-      const r = await fetch("https://api.x.ai/v1/chat/completions", {
+
+    const resp = await fetch("https://api.x.ai/v1/responses", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${key}`,
+      },
+      body: JSON.stringify({
+        model: "grok-4.6",
+        input: prompt,
+      }),
+    });
+
+    if (resp.ok) {
+      const data = await resp.json();
+      analysis = extractText(data);
+    } else {
+      const errBody = await resp.text();
+      // fallback chat completions
+      const chat = await fetch("https://api.x.ai/v1/chat/completions", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${key}`,
         },
         body: JSON.stringify({
-          model,
+          model: "grok-3",
           temperature: 0.5,
           messages: [{ role: "user", content: prompt }],
         }),
       });
-      if (!r.ok) continue;
-      const data = await r.json();
-      analysis = data.choices?.[0]?.message?.content;
-      if (analysis) break;
+      if (chat.ok) {
+        const data = await chat.json();
+        analysis = data.choices?.[0]?.message?.content || null;
+      } else {
+        console.error("xAI error", resp.status, errBody.slice(0, 300));
+      }
     }
 
     if (!analysis) return res.status(200).json(grokStyleLocal(s));
