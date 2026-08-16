@@ -14,6 +14,58 @@ function fmt(n) {
   return Number(n).toLocaleString(undefined, { maximumFractionDigits: n < 10 ? 4 : 2 });
 }
 
+
+function buildIdeaPlan(symbol, price) {
+  if (!price || price <= 0) return null;
+  const step = price >= 1000 ? 50 : price >= 100 ? 1 : price >= 1 ? 0.01 : 0.0001;
+  const round = (v) => Math.round(v / step) * step;
+  const support1 = round(price * 0.975);
+  const support2 = round(price * 0.95);
+  const support3 = round(price * 0.925);
+  const resist1 = round(price * 1.025);
+  const resist2 = round(price * 1.05);
+  const resist3 = round(price * 1.08);
+  const stop = round(price * 0.965);
+  const tp1 = round(price * 1.03);
+  const tp2 = round(price * 1.055);
+  const tp3 = round(price * 1.09);
+
+  let bias = "Neutral";
+  let entry = `Wait for clear structure around $${fmt(round(price))}`;
+  // Relative bias from local structure vs fixed BTC thresholds
+  if (price > resist1) {
+    bias = "Bullish";
+    entry = `Look for longs on pullback to $${fmt(support1)}–$${fmt(support2)}`;
+  } else if (price < support1) {
+    bias = "Bearish";
+    entry = `Look for shorts on bounce into $${fmt(resist1)}–$${fmt(resist2)}`;
+  } else {
+    bias = "Neutral-Bullish";
+    entry = `Look for longs on dip into $${fmt(support1)}–$${fmt(support2)}`;
+  }
+
+  // Soften with % move context: keep simple relative
+  const nearHigh = price >= resist1 * 0.99;
+  if (nearHigh) {
+    bias = "Neutral-Bullish";
+    entry = `Look for longs on dip into $${fmt(support1)}–$${fmt(support2)}`;
+  }
+
+  return {
+    bias,
+    entry,
+    support: [support1, support2, support3].map((v) => fmt(v)),
+    resistance: [resist1, resist2, resist3].map((v) => fmt(v)),
+    stop: `Below $${fmt(stop)}`,
+    tps: [`TP1: $${fmt(tp1)}`, `TP2: $${fmt(tp2)}`, `TP3: $${fmt(tp3)}`],
+    note: `Plan auto-updated from live ${symbol} price ($${fmt(price)}). Risk only 0.5–1% per idea.`,
+    price,
+    updatedAt: new Date().toLocaleString("en-IN", {
+      day: "numeric", month: "short", hour: "2-digit", minute: "2-digit",
+    }),
+  };
+}
+
 function Levels({ label, levels, positive }) {
   if (!levels) return null;
   return (
@@ -182,6 +234,7 @@ function AiCard({ title, badge, data, emptyText }) {
 export default function PlanLab() {
   const [pair, setPair] = useState("BTCUSDT");
   const [tf, setTf] = useState("1h");
+  const [idea, setIdea] = useState(null);
   const [structure, setStructure] = useState(null);
   const [rangeData, setRangeData] = useState(null);
   const [claude, setClaude] = useState(null);
@@ -219,6 +272,7 @@ export default function PlanLab() {
         } catch {}
       }
       setStructure(plan);
+      setIdea(buildIdeaPlan(pair, plan.price));
 
       const price = parseFloat(ticker.lastPrice);
       const high = parseFloat(ticker.highPrice);
@@ -310,11 +364,70 @@ export default function PlanLab() {
         {error && <div className="text-xs text-red-500 mt-2">{error}</div>}
       </div>
 
-      {/* 1 Structure */}
+      {/* 1 Classic trading idea */}
+      <div className="card p-4">
+        <div className="flex items-center justify-between mb-4">
+          <div className="text-sm font-semibold">Trading Plan · {label}USDT</div>
+          {idea?.updatedAt && (
+            <div className="text-[11px] text-slate-500">
+              Updated {idea.updatedAt} · live
+            </div>
+          )}
+        </div>
+        {!idea ? (
+          <div className="text-sm text-slate-500 py-6 text-center">Loading trading plan…</div>
+        ) : (
+          <>
+            <div className="grid sm:grid-cols-2 gap-4 text-sm">
+              <div>
+                <div className="text-xs text-slate-500 mb-1">Bias</div>
+                <div className="font-medium">{idea.bias}</div>
+              </div>
+              <div>
+                <div className="text-xs text-slate-500 mb-1">Entry Idea</div>
+                <div className="font-medium">{idea.entry}</div>
+              </div>
+              <div>
+                <div className="text-xs text-slate-500 mb-1">Support</div>
+                <div className="flex flex-wrap gap-2 mt-1">
+                  {idea.support.map((l) => (
+                    <span key={l} className="px-2.5 py-1 rounded-md text-xs font-semibold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">{l}</span>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-slate-500 mb-1">Resistance</div>
+                <div className="flex flex-wrap gap-2 mt-1">
+                  {idea.resistance.map((l) => (
+                    <span key={l} className="px-2.5 py-1 rounded-md text-xs font-semibold bg-red-500/15 text-red-600 dark:text-red-400">{l}</span>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-slate-500 mb-1">Stop Loss</div>
+                <div className="font-medium negative">{idea.stop}</div>
+              </div>
+              <div>
+                <div className="text-xs text-slate-500 mb-1">Take Profit</div>
+                <div className="space-y-0.5 font-medium positive">
+                  {idea.tps.map((tp) => (
+                    <div key={tp}>{tp}</div>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="mt-4 p-3 rounded-xl text-xs bg-slate-100 dark:bg-slate-800/60 text-slate-600 dark:text-slate-400">
+              {idea.note}
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* 2 Structure */}
       <div className="card p-4">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
-            <div className="text-sm font-semibold">1 · Structure plan · {label} · {tf}</div>
+            <div className="text-sm font-semibold">2 · Structure plan · {label} · {tf}</div>
             <span className="text-[10px] font-semibold uppercase px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
               Free
             </span>
@@ -346,7 +459,7 @@ export default function PlanLab() {
       {/* 2 24h range */}
       <div className="card p-4">
         <div className="flex items-center gap-2 mb-4">
-          <div className="text-sm font-semibold">2 · 24h range · {label}</div>
+          <div className="text-sm font-semibold">3 · 24h range · {label}</div>
           <span className="text-[10px] font-semibold uppercase px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
             Free
           </span>
@@ -379,7 +492,7 @@ export default function PlanLab() {
         )}
       </div>
 
-      <AiCard title={`3 · Claude AI plan · ${label}`} badge="Claude" data={claude} emptyText="Loading Claude plan…" />
+      <AiCard title={`4 · Claude AI plan · ${label}`} badge="Claude" data={claude} emptyText="Loading Claude plan…" />
 
     </div>
   );
