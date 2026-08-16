@@ -888,9 +888,6 @@ export default function App() {
 
             {section === "plan" && (
               <motion.div key="plan" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
-              <div className="rounded-xl border border-indigo-500/30 bg-indigo-500/10 px-3 py-2 text-xs text-indigo-700 dark:text-indigo-300">
-                Scroll down for <strong>Claude AI Analysis — BTC</strong> (below this plan)
-              </div>
               <div className="card p-4">
                 <div className="flex items-center justify-between mb-4">
                   <div className="text-sm font-semibold">Trading Plan · BTCUSDT</div>
