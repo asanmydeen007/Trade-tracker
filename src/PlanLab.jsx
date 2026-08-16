@@ -83,23 +83,41 @@ function buildStructurePlan(symbol, interval, klines) {
   };
 }
 
-function buildRulesAi(plan, ticker) {
+function buildClaudeLocal(plan, ticker) {
   const ch = parseFloat(ticker.priceChangePercent);
   const high = parseFloat(ticker.highPrice);
   const low = parseFloat(ticker.lowPrice);
-  const momentum =
-    ch > 2 ? "Bullish momentum over the last 24h."
-    : ch < -2 ? "Bearish momentum over the last 24h."
-    : "Balanced / sideways tape over the last 24h.";
+  const mid = (high + low) / 2;
+  const regime =
+    plan.bias.includes("Bullish") ? "Constructive structure on the selected timeframe."
+    : plan.bias.includes("Bearish") ? "Defensive structure on the selected timeframe."
+    : "Range / transition — wait for a cleaner break.";
   return {
-    analysis: `${plan.bias}\n\n${momentum}\n\nATR ≈ ${fmt(plan.atr)} on ${plan.interval}.\n\nLong: entry ~$${fmt(plan.long.entry)}, SL ~$${fmt(plan.long.stop)}, TP1 ~$${fmt(plan.long.tp1)}, TP2 ~$${fmt(plan.long.tp2)}.\n\nShort: entry ~$${fmt(plan.short.entry)}, SL ~$${fmt(plan.short.stop)}, TP1 ~$${fmt(plan.short.tp1)}, TP2 ~$${fmt(plan.short.tp2)}.\n\n24h range $${fmt(low)}–$${fmt(high)}. Not financial advice.`,
+    analysis: `Claude-style structured plan · ${plan.symbol} · ${plan.interval}
+
+Bias: ${plan.bias}
+${regime}
+
+Market context: spot $${fmt(plan.price)}, 24h ${ch >= 0 ? "+" : ""}${ch.toFixed(2)}%, range $${fmt(low)}–$${fmt(high)} (mid $${fmt(mid)}). ATR(14) ${fmt(plan.atr)}.
+
+Primary long framework
+• Entry near $${fmt(plan.long.entry)} only on hold of intraday support
+• Stop $${fmt(plan.long.stop)} (≈1.5×ATR)
+• Targets $${fmt(plan.long.tp1)} then $${fmt(plan.long.tp2)}
+
+Primary short framework
+• Entry near $${fmt(plan.short.entry)} only on rejection of resistance
+• Stop $${fmt(plan.short.stop)}
+• Targets $${fmt(plan.short.tp1)} then $${fmt(plan.short.tp2)}
+
+Process note: reduce size if price is mid-range. This is a rules-based Claude-format plan when ANTHROPIC_API_KEY is not set. Not financial advice.`,
     snapshot: {
       price: plan.price,
       change24hPct: ch,
       high24h: high,
       low24h: low,
     },
-    source: "rules",
+    source: "claude-local",
     generatedAt: new Date().toISOString(),
   };
 }
@@ -121,7 +139,11 @@ function AiCard({ title, badge, data, emptyText }) {
             })}
             {data.source === "claude" || data.source === "grok"
               ? ` · ${data.source === "claude" ? "Claude" : "Grok"}`
-              : " · rules engine"}
+              : data.source === "grok-local"
+                ? " · Grok style"
+                : data.source === "claude-local"
+                  ? " · Claude format"
+                  : " · rules engine"}
           </div>
         )}
       </div>
@@ -228,7 +250,7 @@ export default function PlanLab() {
           }
         } catch {}
       }
-      setClaude(claudeData || buildRulesAi(plan, ticker));
+      setClaude(claudeData || buildClaudeLocal(plan, ticker));
 
       // Grok
       let grokData = null;
@@ -240,7 +262,7 @@ export default function PlanLab() {
           if (d?.analysis) grokData = d;
         }
       } catch {}
-      setGrok(grokData || buildRulesAi(plan, ticker));
+      setGrok(grokData || buildClaudeLocal(plan, ticker));
     } catch (e) {
       setError(String(e?.message || e));
     } finally {
