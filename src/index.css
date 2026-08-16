@@ -33,3 +33,26 @@ body {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
 .dark ::-webkit-scrollbar-thumb { background: #475569; }
+
+/* Remove white focus / selection box on chart click (especially mobile) */
+.recharts-wrapper,
+.recharts-surface,
+.recharts-pie,
+.recharts-sector,
+.recharts-layer,
+.recharts-pie-sector,
+.recharts-active-shape,
+.recharts-bar-rectangle,
+canvas {
+  outline: none !important;
+  -webkit-tap-highlight-color: transparent !important;
+  -webkit-touch-callout: none;
+  user-select: none;
+}
+
+.recharts-wrapper:focus,
+.recharts-wrapper:focus-visible,
+.recharts-surface:focus {
+  outline: none !important;
+  box-shadow: none !important;
+}
