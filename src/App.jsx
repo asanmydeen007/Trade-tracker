@@ -72,7 +72,7 @@ export default function App() {
     const tp2 = round(price * 1.055);
     const tp3 = round(price * 1.09);
 
-    // Bias logic
+    // Bias logic — keep language consistent with bias
     let bias = "Neutral";
     let entry = `Wait for clear structure around $${round(price).toLocaleString()}`;
     if (price > 70000) {
@@ -81,9 +81,12 @@ export default function App() {
     } else if (price < 55000) {
       bias = "Bearish";
       entry = `Look for shorts on bounce into $${resist1.toLocaleString()}–$${resist2.toLocaleString()}`;
+    } else if (price >= 62000) {
+      bias = "Neutral-Bullish";
+      entry = `Look for longs on dip into $${support1.toLocaleString()}–$${support2.toLocaleString()}`;
     } else {
       bias = "Neutral-Bearish short-term";
-      entry = `Watch reclaim of $${resist1.toLocaleString()}–$${resist2.toLocaleString()} with volume`;
+      entry = `Look for shorts on bounce into $${resist1.toLocaleString()}–$${resist2.toLocaleString()}`;
     }
 
     return {
