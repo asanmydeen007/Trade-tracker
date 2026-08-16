@@ -1,10 +1,10 @@
 import { useState, useEffect, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell
+  AreaChart, Area, PieChart, Pie, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, Legend
 } from "recharts";
 import { Menu, X, Sun, Moon, ChevronLeft, ChevronRight } from "lucide-react";
-import { TRADES, PAIR_COLORS, SECTIONS } from "./data";
+import { TRADES, PAIR_COLORS, PAIR_ICONS, SECTIONS } from "./data";
 import clsx from "clsx";
 
 const USD_RATE = 95.55;
@@ -212,7 +212,9 @@ export default function App() {
                   className="card p-4 flex items-center justify-between"
                 >
                   <div className="flex items-center gap-3">
-                    <div className="w-11 h-11 rounded-full bg-orange-500/20 flex items-center justify-center text-orange-500 font-bold text-lg">₿</div>
+                    <div className="w-11 h-11 rounded-full bg-orange-500/15 flex items-center justify-center overflow-hidden">
+                      <img src={PAIR_ICONS.Bitcoin} alt="Bitcoin" className="w-7 h-7 object-contain" />
+                    </div>
                     <div>
                       <div className="font-semibold">Bitcoin</div>
                       <div className="text-[11px] text-slate-500 flex items-center gap-1.5">
@@ -290,16 +292,31 @@ export default function App() {
                     <div className="text-sm font-semibold mb-3">PnL by Pair</div>
                     <div className="h-52 lg:h-72">
                       <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={pairData} layout="vertical">
-                          <XAxis type="number" tick={{ fill: dark ? "#94a3b8" : "#64748b", fontSize: 11 }} axisLine={false} tickLine={false} />
-                          <YAxis type="category" dataKey="name" width={70} tick={{ fill: dark ? "#94a3b8" : "#64748b", fontSize: 11 }} axisLine={false} tickLine={false} />
-                          <Tooltip contentStyle={tooltipStyle} formatter={(v, _, props) => [formatPnl(props.payload.value), "PnL"]} />
-                          <Bar dataKey="value" radius={[0, 6, 6, 0]} maxBarSize={28}>
+                        <PieChart>
+                          <Pie
+                            data={pairData}
+                            dataKey="abs"
+                            nameKey="name"
+                            cx="50%"
+                            cy="50%"
+                            innerRadius={55}
+                            outerRadius={85}
+                            paddingAngle={3}
+                          >
                             {pairData.map((entry, i) => (
-                              <Cell key={i} fill={entry.value >= 0 ? "#22c55e" : "#ef4444"} />
+                              <Cell key={i} fill={entry.color} />
                             ))}
-                          </Bar>
-                        </BarChart>
+                          </Pie>
+                          <Tooltip
+                            contentStyle={tooltipStyle}
+                            formatter={(_, __, props) => [formatPnl(props.payload.value), props.payload.name]}
+                          />
+                          <Legend
+                            verticalAlign="bottom"
+                            height={36}
+                            formatter={(value) => <span style={{ color: dark ? "#94a3b8" : "#64748b", fontSize: 12 }}>{value}</span>}
+                          />
+                        </PieChart>
                       </ResponsiveContainer>
                     </div>
                   </motion.div>
@@ -382,11 +399,19 @@ export default function App() {
                           className="flex items-center justify-between py-3.5 gap-3"
                         >
                           <div className="flex items-center gap-3 min-w-0">
-                            <div
-                              className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold shrink-0"
-                              style={{ background: `${t.color}22`, color: t.color }}
-                            >
-                              {t.icon}
+                            <div className="w-9 h-9 rounded-full overflow-hidden bg-slate-100 dark:bg-slate-800 flex items-center justify-center shrink-0">
+                              {PAIR_ICONS[t.pair] ? (
+                                <img
+                                  src={PAIR_ICONS[t.pair]}
+                                  alt={t.pair}
+                                  className="w-6 h-6 object-contain"
+                                  onError={(e) => { e.target.style.display = "none"; }}
+                                />
+                              ) : (
+                                <span className="text-xs font-bold" style={{ color: PAIR_COLORS[t.pair] || "#64748b" }}>
+                                  {t.pair[0]}
+                                </span>
+                              )}
                             </div>
                             <div className="min-w-0">
                               <div className="font-medium truncate">{t.name}</div>
