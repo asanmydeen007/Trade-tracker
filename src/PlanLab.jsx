@@ -137,13 +137,11 @@ function AiCard({ title, badge, data, emptyText }) {
             {new Date(data.generatedAt).toLocaleString("en-IN", {
               day: "numeric", month: "short", hour: "2-digit", minute: "2-digit",
             })}
-            {data.source === "claude" || data.source === "grok"
-              ? ` · ${data.source === "claude" ? "Claude" : "Grok"}`
-              : data.source === "grok-local"
-                ? " · Grok style"
-                : data.source === "claude-local"
-                  ? " · Claude format"
-                  : " · rules engine"}
+            {data.source === "claude"
+              ? " · Claude"
+              : data.source === "claude-local"
+                ? " · Claude format"
+                : " · rules engine"}
           </div>
         )}
       </div>
@@ -187,7 +185,6 @@ export default function PlanLab() {
   const [structure, setStructure] = useState(null);
   const [rangeData, setRangeData] = useState(null);
   const [claude, setClaude] = useState(null);
-  const [grok, setGrok] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
@@ -251,18 +248,6 @@ export default function PlanLab() {
         } catch {}
       }
       setClaude(claudeData || buildClaudeLocal(plan, ticker));
-
-      // Grok
-      let grokData = null;
-      try {
-        const r = await fetch(`/api/grok-plan?symbol=${pair}&interval=${tf}`);
-        const ct = r.headers.get("content-type") || "";
-        if (r.ok && ct.includes("application/json")) {
-          const d = await r.json();
-          if (d?.analysis) grokData = d;
-        }
-      } catch {}
-      setGrok(grokData || buildClaudeLocal(plan, ticker));
     } catch (e) {
       setError(String(e?.message || e));
     } finally {
@@ -395,10 +380,9 @@ export default function PlanLab() {
       </div>
 
       <AiCard title={`3 · Claude AI plan · ${label}`} badge="Claude" data={claude} emptyText="Loading Claude plan…" />
-      <AiCard title={`4 · Grok AI plan · ${label}`} badge="Grok" data={grok} emptyText="Loading Grok plan…" />
 
       <div className="text-[11px] text-slate-500 px-1 pb-2">
-        Not financial advice. Optional keys: ANTHROPIC_API_KEY (Claude), XAI_API_KEY (Grok). Without keys, AI cards use the rules engine.
+        Not financial advice. Optional: ANTHROPIC_API_KEY for live Claude. Without it, Claude card uses the local format.
       </div>
     </div>
   );
