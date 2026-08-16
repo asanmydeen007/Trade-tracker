@@ -407,7 +407,7 @@ export default function App() {
             <div>
               <h1 className="text-lg font-bold leading-tight">Mydeen's Trading Journal</h1>
               <p className="text-[11px] text-slate-500">
-                {syncStatus === "notion" && "● Live from Notion"}
+                {syncStatus === "notion" && (<span className="inline-flex items-center gap-1.5"><span className="relative flex h-2 w-2"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span><span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span></span><span className="text-emerald-600 dark:text-emerald-400">Live from Notion</span></span>)}
                 {syncStatus === "loading" && "Syncing Notion…"}
                 {syncStatus === "fallback" && "Offline snapshot (add NOTION_TOKEN for live)"}
                 {syncStatus === "error" && "Notion sync failed — using snapshot"}
