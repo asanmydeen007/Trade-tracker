@@ -77,9 +77,15 @@ export default async function handler(req, res) {
 
     const usdInr = fx?.rates?.INR || 95.5;
 
+    // India retail is typically above pure international spot (GST + local premium).
+    // Soft indicative uplift so gram rates read closer to Indian jeweller boards.
+    const INDIA_PREMIUM = { Gold: 0.04, Silver: 0.12 };
+
     const pack = (name, symbol, s) => {
       const perGramUsd = s.price / OZ_TO_GRAM;
-      const perGramInr = perGramUsd * usdInr;
+      const perGramInrSpot = perGramUsd * usdInr;
+      const premium = INDIA_PREMIUM[name] || 0.05;
+      const perGramInrIndia = perGramInrSpot * (1 + premium);
       const ozInr = s.price * usdInr;
       return {
         name,
@@ -91,7 +97,10 @@ export default async function handler(req, res) {
         high24h: s.high24h,
         low24h: s.low24h,
         perGramUsd,
-        perGramInr,
+        perGramInr: perGramInrSpot,
+        perGramInrIndia,
+        per10gInrIndia: perGramInrIndia * 10,
+        indiaPremiumPct: Math.round(premium * 100),
         insight: insight(name, s),
       };
     };
