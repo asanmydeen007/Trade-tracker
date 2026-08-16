@@ -42,7 +42,7 @@ Return ONLY valid JSON (no markdown) with this shape:
   "key_levels": ["..."]
 }
 Use visible price axis if readable. If levels cannot be read, use null and explain in summary.
-Not financial advice.`;
+`;
 
     const r = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",

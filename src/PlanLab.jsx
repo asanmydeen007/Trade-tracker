@@ -76,7 +76,7 @@ function buildStructurePlan(symbol, interval, klines) {
       tp1: price - 2 * atr,
       tp2: price - 3 * atr,
     },
-    note: `ATR(14)×1.5 SL · 2R/3R · ${interval}. Risk 0.5–1%. Not financial advice.`,
+    note: `ATR(14)×1.5 SL · 2R/3R · ${interval}. Risk 0.5–1%.`,
     updatedAt: new Date().toLocaleString("en-IN", {
       day: "numeric", month: "short", hour: "2-digit", minute: "2-digit",
     }),
@@ -110,7 +110,7 @@ Primary short framework
 • Stop $${fmt(plan.short.stop)}
 • Targets $${fmt(plan.short.tp1)} then $${fmt(plan.short.tp2)}
 
-Process note: reduce size if price is mid-range. This is a rules-based Claude-format plan when ANTHROPIC_API_KEY is not set. Not financial advice.`,
+Reduce size if price is mid-range.`,
     snapshot: {
       price: plan.price,
       change24hPct: ch,
@@ -232,7 +232,7 @@ export default function PlanLab() {
         change24hPct: ch,
         long: { entry: mid, stop: low, tp1: high, tp2: high + (high - low) * 0.5 },
         short: { entry: mid, stop: high, tp1: low, tp2: low - (high - low) * 0.5 },
-        note: "24h range mean-reversion style. Not financial advice.",
+        note: "24h range mean-reversion style levels.",
       });
 
       // Claude
@@ -381,9 +381,6 @@ export default function PlanLab() {
 
       <AiCard title={`3 · Claude AI plan · ${label}`} badge="Claude" data={claude} emptyText="Loading Claude plan…" />
 
-      <div className="text-[11px] text-slate-500 px-1 pb-2">
-        Not financial advice. Optional: ANTHROPIC_API_KEY for live Claude. Without it, Claude card uses the local format.
-      </div>
     </div>
   );
 }

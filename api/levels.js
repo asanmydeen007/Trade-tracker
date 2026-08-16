@@ -79,7 +79,7 @@ export default async function handler(req, res) {
       range24: { high: high24, low: low24 },
       long,
       short,
-      note: "ATR(14) × 1.5 SL · 2R/3R targets. Not financial advice.",
+      note: "ATR(14) × 1.5 SL · 2R/3R targets.",
       asOf: new Date().toISOString(),
     });
   } catch (e) {

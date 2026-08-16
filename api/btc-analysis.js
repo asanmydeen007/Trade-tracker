@@ -55,7 +55,7 @@ ${levels}
 
 ${position}
 
-Plan: risk only 0.5–1% per idea. Prefer confirmation at range edges over FOMO entries. This is a rules-based snapshot from live 24h data — not financial advice.
+Plan: risk only 0.5–1% per idea. Prefer confirmation at range edges over FOMO entries.
 
 Spot: $${s.price.toLocaleString(undefined, { maximumFractionDigits: 0 })} · 24h ${ch >= 0 ? "+" : ""}${ch.toFixed(2)}% · Vol $${(s.volume24h / 1e9).toFixed(2)}B`;
 }
