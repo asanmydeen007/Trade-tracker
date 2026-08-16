@@ -34,11 +34,42 @@ export default function App() {
   const [newsLoading, setNewsLoading] = useState(false);
   const [toast, setToast] = useState(null);
   const [tradingPlan, setTradingPlan] = useState(null);
+  const [trades, setTrades] = useState(TRADES);
+  const [syncStatus, setSyncStatus] = useState("fallback"); // notion | fallback | loading | error
+  const [syncedAt, setSyncedAt] = useState(null);
 
   // Theme
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
   }, [dark]);
+
+  // Live trades from Notion (via /api/trades)
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setSyncStatus((s) => (s === "notion" ? "notion" : "loading"));
+      try {
+        const res = await fetch("/api/trades");
+        const data = await res.json();
+        if (cancelled) return;
+        if (res.ok && Array.isArray(data.trades) && data.trades.length) {
+          setTrades(data.trades);
+          setSyncStatus("notion");
+          setSyncedAt(data.syncedAt || new Date().toISOString());
+        } else {
+          setSyncStatus(data?.source === "missing_token" ? "fallback" : "error");
+        }
+      } catch {
+        if (!cancelled) setSyncStatus("error");
+      }
+    };
+    load();
+    const id = setInterval(load, 5 * 60 * 1000); // every 5 min
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
 
   // Live BTC price
   useEffect(() => {
@@ -187,13 +218,13 @@ export default function App() {
   }, []);
 
   const filtered = useMemo(() => {
-    return TRADES.filter((t) => {
+    return trades.filter((t) => {
       if (pairFilter !== "all" && t.pair !== pairFilter) return false;
       if (resultFilter === "Win" && t.pnl < 0) return false;
       if (resultFilter === "Loss" && t.pnl >= 0) return false;
       return true;
     });
-  }, [pairFilter, resultFilter]);
+  }, [trades, pairFilter, resultFilter]);
 
   const totalPnl = filtered.reduce((s, t) => s + t.pnl, 0);
   const wins = filtered.filter((t) => t.pnl > 0).length;
@@ -201,13 +232,13 @@ export default function App() {
 
   // Cumulative chart data
   const cumulativeData = useMemo(() => {
-    const sorted = [...TRADES].sort((a, b) => a.date.localeCompare(b.date));
+    const sorted = [...trades].sort((a, b) => a.date.localeCompare(b.date));
     let sum = 0;
     return sorted.map((t) => {
       sum += t.pnl;
       return { date: t.date.slice(5), pnl: sum, name: t.name };
     });
-  }, []);
+  }, [trades]);
 
   // Pair PnL
   const pairData = useMemo(() => {
@@ -243,7 +274,7 @@ export default function App() {
     const firstDay = new Date(calYear, calMonth, 1).getDay();
     const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
     const dayPnl = {};
-    TRADES.forEach((t) => {
+    trades.forEach((t) => {
       const [y, m, d] = t.date.split("-").map(Number);
       if (y === calYear && m - 1 === calMonth) {
         dayPnl[d] = (dayPnl[d] || 0) + t.pnl;
@@ -255,7 +286,7 @@ export default function App() {
       days.push({ day: d, pnl: dayPnl[d] });
     }
     return days;
-  }, [calMonth, calYear]);
+  }, [trades, calMonth, calYear]);
 
   const monthNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
@@ -359,7 +390,12 @@ export default function App() {
             </button>
             <div>
               <h1 className="text-lg font-bold leading-tight">Mydeen's Trading Journal</h1>
-              <p className="text-[11px] text-slate-500">Synced from Notion</p>
+              <p className="text-[11px] text-slate-500">
+                {syncStatus === "notion" && "● Live from Notion"}
+                {syncStatus === "loading" && "Syncing Notion…"}
+                {syncStatus === "fallback" && "Offline snapshot (add NOTION_TOKEN for live)"}
+                {syncStatus === "error" && "Notion sync failed — using snapshot"}
+              </p>
             </div>
           </div>
           <button
