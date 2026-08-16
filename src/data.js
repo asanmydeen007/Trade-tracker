@@ -25,9 +25,9 @@ export const PAIR_ICONS = {
   Solana: "https://assets.coingecko.com/coins/images/4128/small/solana.png",
   Sui: "https://assets.coingecko.com/coins/images/26375/small/sui-ocean-square.png",
   XRP: "https://assets.coingecko.com/coins/images/44/small/xrp-symbol-white-128.png",
-  // Metals - use simple reliable icons
-  Silver: "https://cdn.jsdelivr.net/gh/spothq/cryptocurrency-icons@master/32/color/generic.png",
-  Gold: "https://cdn.jsdelivr.net/gh/spothq/cryptocurrency-icons@master/32/color/generic.png",
+  // Metals
+  Silver: null,
+  Gold: null,
 };
 
 export const SECTIONS = [
