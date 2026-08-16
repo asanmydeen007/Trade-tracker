@@ -76,7 +76,7 @@ As of: ${s.asOf}
 Write a concise trading-plan style analysis (150-250 words) covering:
 - Current momentum/trend read
 - Key levels to watch (support/resistance from the 24h range)
-- A balanced risk note (not financial advice)
+- A balanced risk note 
 
 Factual, no hype.`;
 
