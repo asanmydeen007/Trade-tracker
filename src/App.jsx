@@ -33,6 +33,7 @@ export default function App() {
   const [news, setNews] = useState([]);
   const [newsLoading, setNewsLoading] = useState(false);
   const [toast, setToast] = useState(null);
+  const [tradingPlan, setTradingPlan] = useState(null);
 
   // Theme
   useEffect(() => {
@@ -52,6 +53,78 @@ export default function App() {
     const id = setInterval(fetchBtc, 15000);
     return () => clearInterval(id);
   }, []);
+
+  // Generate / refresh Trading Plan every 4 hours (and on first load)
+  const generateTradingPlan = (price) => {
+    if (!price || price < 1000) return null;
+
+    const round = (v) => Math.round(v / 50) * 50; // round to nearest 50
+
+    // Simple dynamic levels based on current price
+    const support1 = round(price * 0.975);
+    const support2 = round(price * 0.95);
+    const support3 = round(price * 0.925);
+    const resist1 = round(price * 1.025);
+    const resist2 = round(price * 1.05);
+    const resist3 = round(price * 1.08);
+    const stop = round(price * 0.965);
+    const tp1 = round(price * 1.03);
+    const tp2 = round(price * 1.055);
+    const tp3 = round(price * 1.09);
+
+    // Bias logic
+    let bias = "Neutral";
+    let entry = `Wait for clear structure around $${round(price).toLocaleString()}`;
+    if (price > 70000) {
+      bias = "Bullish";
+      entry = `Look for longs on pullback to $${support1.toLocaleString()}–$${support2.toLocaleString()}`;
+    } else if (price < 55000) {
+      bias = "Bearish";
+      entry = `Look for shorts on bounce into $${resist1.toLocaleString()}–$${resist2.toLocaleString()}`;
+    } else {
+      bias = "Neutral-Bearish short-term";
+      entry = `Watch reclaim of $${resist1.toLocaleString()}–$${resist2.toLocaleString()} with volume`;
+    }
+
+    return {
+      bias,
+      entry,
+      support: [support1, support2, support3].map(v => v.toLocaleString()),
+      resistance: [resist1, resist2, resist3].map(v => v.toLocaleString()),
+      stop: `Below $${stop.toLocaleString()}`,
+      tps: [
+        `TP1: $${tp1.toLocaleString()}`,
+        `TP2: $${tp2.toLocaleString()}`,
+        `TP3: $${tp3.toLocaleString()}`,
+      ],
+      note: `Plan auto-updated from live BTC price ($${Math.round(price).toLocaleString()}). Risk only 0.5–1% per idea.`,
+      updatedAt: new Date().toLocaleString("en-IN", {
+        day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"
+      }),
+    };
+  };
+
+  useEffect(() => {
+    const updatePlan = async () => {
+      try {
+        let price = btcPrice;
+        if (!price) {
+          const res = await fetch("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT");
+          const data = await res.json();
+          price = parseFloat(data.price);
+        }
+        const plan = generateTradingPlan(price);
+        if (plan) setTradingPlan(plan);
+      } catch (e) {
+        console.error("Plan update failed", e);
+      }
+    };
+
+    updatePlan(); // run immediately
+    const FOUR_HOURS = 4 * 60 * 60 * 1000;
+    const id = setInterval(updatePlan, FOUR_HOURS);
+    return () => clearInterval(id);
+  }, [btcPrice]);
 
   // Fetch latest crypto news (with CORS-friendly proxy fallback)
   useEffect(() => {
@@ -680,48 +753,61 @@ export default function App() {
 
             {section === "plan" && (
               <motion.div key="plan" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="card p-4">
-                <div className="text-sm font-semibold mb-4">Trading Plan · BTCUSDT</div>
-                <div className="grid sm:grid-cols-2 gap-4 text-sm">
-                  <div>
-                    <div className="text-xs text-slate-500 mb-1">Bias</div>
-                    <div className="font-medium">Neutral-Bearish short-term</div>
-                  </div>
-                  <div>
-                    <div className="text-xs text-slate-500 mb-1">Entry Idea</div>
-                    <div className="font-medium">Watch reclaim of 63,200–63,500 with volume</div>
-                  </div>
-                  <div>
-                    <div className="text-xs text-slate-500 mb-1">Support</div>
-                    <div className="flex flex-wrap gap-2 mt-1">
-                      {["61,500", "59,800", "58,000"].map((l) => (
-                        <span key={l} className="px-2.5 py-1 rounded-md text-xs font-semibold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">{l}</span>
-                      ))}
+                <div className="flex items-center justify-between mb-4">
+                  <div className="text-sm font-semibold">Trading Plan · BTCUSDT</div>
+                  {tradingPlan?.updatedAt && (
+                    <div className="text-[11px] text-slate-500">
+                      Updated {tradingPlan.updatedAt} · every 4h
                     </div>
-                  </div>
-                  <div>
-                    <div className="text-xs text-slate-500 mb-1">Resistance</div>
-                    <div className="flex flex-wrap gap-2 mt-1">
-                      {["64,500", "66,200", "68,500"].map((l) => (
-                        <span key={l} className="px-2.5 py-1 rounded-md text-xs font-semibold bg-red-500/15 text-red-600 dark:text-red-400">{l}</span>
-                      ))}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-xs text-slate-500 mb-1">Stop Loss</div>
-                    <div className="font-medium negative">Below 61,200</div>
-                  </div>
-                  <div>
-                    <div className="text-xs text-slate-500 mb-1">Take Profit</div>
-                    <div className="space-y-0.5 font-medium positive">
-                      <div>TP1: 64,800</div>
-                      <div>TP2: 66,200</div>
-                      <div>TP3: 68,500</div>
-                    </div>
-                  </div>
+                  )}
                 </div>
-                <div className="mt-4 p-3 rounded-xl text-xs bg-slate-100 dark:bg-slate-800/60 text-slate-600 dark:text-slate-400">
-                  Portfolio is deep red after Silver -$400. Prefer waiting for clear structure. Risk only 0.5–1% per idea until equity recovers.
-                </div>
+                {tradingPlan ? (
+                  <>
+                    <div className="grid sm:grid-cols-2 gap-4 text-sm">
+                      <div>
+                        <div className="text-xs text-slate-500 mb-1">Bias</div>
+                        <div className="font-medium">{tradingPlan.bias}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-slate-500 mb-1">Entry Idea</div>
+                        <div className="font-medium">{tradingPlan.entry}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-slate-500 mb-1">Support</div>
+                        <div className="flex flex-wrap gap-2 mt-1">
+                          {tradingPlan.support.map((l) => (
+                            <span key={l} className="px-2.5 py-1 rounded-md text-xs font-semibold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">{l}</span>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-slate-500 mb-1">Resistance</div>
+                        <div className="flex flex-wrap gap-2 mt-1">
+                          {tradingPlan.resistance.map((l) => (
+                            <span key={l} className="px-2.5 py-1 rounded-md text-xs font-semibold bg-red-500/15 text-red-600 dark:text-red-400">{l}</span>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-slate-500 mb-1">Stop Loss</div>
+                        <div className="font-medium negative">{tradingPlan.stop}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-slate-500 mb-1">Take Profit</div>
+                        <div className="space-y-0.5 font-medium positive">
+                          {tradingPlan.tps.map((tp) => (
+                            <div key={tp}>{tp}</div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-4 p-3 rounded-xl text-xs bg-slate-100 dark:bg-slate-800/60 text-slate-600 dark:text-slate-400">
+                      {tradingPlan.note}
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-sm text-slate-500 py-6 text-center">Loading trading plan…</div>
+                )}
               </motion.div>
             )}
           </AnimatePresence>
