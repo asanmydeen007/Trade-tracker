@@ -37,4 +37,5 @@ export const SECTIONS = [
   { id: "forex", label: "Forex", icon: "💱" },
   { id: "news", label: "News", icon: "📰" },
   { id: "plan", label: "Trading Plan", icon: "📋" },
+  { id: "analysis", label: "Analysis", icon: "🔬" },
 ];

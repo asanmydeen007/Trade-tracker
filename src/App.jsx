@@ -5,6 +5,7 @@ import {
 } from "recharts";
 import { Menu, X, Sun, Moon, ChevronLeft, ChevronRight } from "lucide-react";
 import { TRADES, PAIR_COLORS, PAIR_ICONS, SECTIONS } from "./data";
+import AnalysisPanel from "./AnalysisPanel";
 import clsx from "clsx";
 
 const USD_RATE = 95.55;
@@ -1002,6 +1003,16 @@ export default function App() {
                   </>
                 )}
               </div>
+              </motion.div>
+            )}
+            {section === "analysis" && (
+              <motion.div
+                key="analysis"
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+              >
+                <AnalysisPanel />
               </motion.div>
             )}
           </AnimatePresence>
