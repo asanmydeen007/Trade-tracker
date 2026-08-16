@@ -6,6 +6,7 @@ import {
 import { Menu, X, Sun, Moon, ChevronLeft, ChevronRight } from "lucide-react";
 import { TRADES, PAIR_COLORS, PAIR_ICONS, SECTIONS } from "./data";
 import PlanLab from "./PlanLab";
+import MetalsPanel from "./MetalsPanel";
 import clsx from "clsx";
 
 const USD_RATE = 95.55;
@@ -849,7 +850,7 @@ export default function App() {
             )}
 
             {/* Other sections */}
-            {["us-stocks", "indian", "forex"].includes(section) && (
+            {["us-stocks", "indian"].includes(section) && (
               <motion.div
                 key={section}
                 initial={{ opacity: 0, y: 12 }}
@@ -858,12 +859,23 @@ export default function App() {
                 className="card p-12 text-center"
               >
                 <div className="text-5xl mb-4">
-                  {section === "us-stocks" ? "🏴‍☠️" : section === "indian" ? "🚀" : "🌊"}
+                  {section === "us-stocks" ? "🇺🇸" : "🇮🇳"}
                 </div>
                 <h2 className="text-xl font-bold mb-2">
-                  {section === "us-stocks" ? "US Stocks" : section === "indian" ? "Indian Stocks" : "Forex"}
+                  {section === "us-stocks" ? "US Stocks" : "Indian Stocks"}
                 </h2>
                 <p className="text-slate-500 text-sm">No positions yet.</p>
+              </motion.div>
+            )}
+
+            {section === "forex" && (
+              <motion.div
+                key="forex"
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+              >
+                <MetalsPanel />
               </motion.div>
             )}
 
