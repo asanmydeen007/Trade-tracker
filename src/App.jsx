@@ -32,6 +32,7 @@ export default function App() {
   const [calYear, setCalYear] = useState(new Date().getFullYear());
   const [news, setNews] = useState([]);
   const [newsLoading, setNewsLoading] = useState(false);
+  const [toast, setToast] = useState(null);
 
   // Theme
   useEffect(() => {
@@ -182,18 +183,32 @@ export default function App() {
 
   const monthNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
-  const tooltipStyle = {
-    backgroundColor: dark ? "#1e293b" : "#ffffff",
-    border: `1px solid ${dark ? "#475569" : "#e2e8f0"}`,
-    borderRadius: 10,
-    fontSize: 12,
-    color: dark ? "#f1f5f9" : "#0f172a",
-    boxShadow: "0 4px 12px rgba(0,0,0,0.25)",
-    padding: "8px 12px",
+  const showToast = (msg) => {
+    setToast(msg);
+    clearTimeout(window.__toastTimer);
+    window.__toastTimer = setTimeout(() => setToast(null), 2200);
   };
+
+  // Tooltips disabled — we use toast instead
+  const tooltipStyle = { display: "none" };
 
   return (
     <div className="flex min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100">
+      {/* Toast */}
+      <AnimatePresence>
+        {toast && (
+          <motion.div
+            initial={{ opacity: 0, y: 40, x: "-50%" }}
+            animate={{ opacity: 1, y: 0, x: "-50%" }}
+            exit={{ opacity: 0, y: 20, x: "-50%" }}
+            className="fixed bottom-8 left-1/2 z-[100] px-5 py-3 rounded-2xl bg-slate-900 text-white text-sm font-medium shadow-2xl pointer-events-none"
+            style={{ maxWidth: "90vw" }}
+          >
+            {toast}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Overlay */}
       <AnimatePresence>
         {sidebarOpen && (
@@ -354,7 +369,21 @@ export default function App() {
                           <XAxis dataKey="date" tick={{ fill: dark ? "#94a3b8" : "#64748b", fontSize: 11 }} axisLine={false} tickLine={false} />
                           <YAxis tick={{ fill: dark ? "#94a3b8" : "#64748b", fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${v}`} />
                           <Tooltip contentStyle={tooltipStyle} itemStyle={{ color: dark ? "#f1f5f9" : "#0f172a" }} formatter={(v) => [formatPnl(v), "PnL"]} />
-                          <Area type="monotone" dataKey="pnl" stroke="#ef4444" fill="url(#pnlGrad)" strokeWidth={2} />
+                          <Area
+                            type="monotone"
+                            dataKey="pnl"
+                            stroke="#ef4444"
+                            fill="url(#pnlGrad)"
+                            strokeWidth={2}
+                            activeDot={{
+                              r: 6,
+                              onClick: (e, payload) => {
+                                const p = payload?.payload;
+                                if (p) showToast(`${p.date}  PnL : ${formatPnl(p.pnl)}`);
+                              },
+                              style: { cursor: "pointer" }
+                            }}
+                          />
                         </AreaChart>
                       </ResponsiveContainer>
                     </div>
@@ -379,6 +408,14 @@ export default function App() {
                             innerRadius={55}
                             outerRadius={85}
                             paddingAngle={3}
+                            onClick={(data) => {
+                              if (data && data.name != null) {
+                                const raw = pairData.find(p => p.name === data.name);
+                                const val = raw ? raw.pnl : data.value;
+                                showToast(`${data.name} : ${formatPnl(val)}`);
+                              }
+                            }}
+                            style={{ cursor: "pointer" }}
                           >
                             {pairData.map((entry, i) => (
                               <Cell key={i} fill={entry.color} />
@@ -430,7 +467,18 @@ export default function App() {
                           formatter={(v) => [formatPnl(v), "PnL"]}
                           labelFormatter={(_, payload) => payload?.[0]?.payload?.date || ""}
                         />
-                        <Bar dataKey="pnl" radius={[6, 6, 0, 0]} maxBarSize={48}>
+                        <Bar
+                          dataKey="pnl"
+                          radius={[6, 6, 0, 0]}
+                          maxBarSize={48}
+                          onClick={(data) => {
+                            if (data && data.payload) {
+                              const d = data.payload;
+                              showToast(`${d.date || d.label}  PnL : ${formatPnl(d.pnl)}`);
+                            }
+                          }}
+                          style={{ cursor: "pointer" }}
+                        >
                           {dailyData.map((entry, i) => (
                             <Cell key={i} fill={entry.pnl >= 0 ? "#22c55e" : "#ef4444"} />
                           ))}
