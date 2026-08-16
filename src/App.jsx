@@ -30,6 +30,8 @@ export default function App() {
   const [btcPrice, setBtcPrice] = useState(null);
   const [calMonth, setCalMonth] = useState(new Date().getMonth());
   const [calYear, setCalYear] = useState(new Date().getFullYear());
+  const [news, setNews] = useState([]);
+  const [newsLoading, setNewsLoading] = useState(false);
 
   // Theme
   useEffect(() => {
@@ -48,6 +50,35 @@ export default function App() {
     fetchBtc();
     const id = setInterval(fetchBtc, 15000);
     return () => clearInterval(id);
+  }, []);
+
+  // Fetch latest crypto news
+  useEffect(() => {
+    const fetchNews = async () => {
+      setNewsLoading(true);
+      try {
+        const res = await fetch("https://min-api.cryptocompare.com/data/v2/news/?lang=EN");
+        const data = await res.json();
+        const items = (data.Data || []).slice(0, 12).map((n) => ({
+          id: n.id,
+          title: n.title,
+          url: n.url,
+          source: n.source_info?.name || n.source || "Crypto",
+          image: n.imageurl,
+          time: n.published_on ? new Date(n.published_on * 1000).toLocaleString("en-IN", {
+            day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"
+          }) : "",
+          body: n.body?.slice(0, 120) + "..." || "",
+        }));
+        setNews(items);
+      } catch (e) {
+        console.error("News fetch failed", e);
+        setNews([]);
+      } finally {
+        setNewsLoading(false);
+      }
+    };
+    fetchNews();
   }, []);
 
   const filtered = useMemo(() => {
@@ -109,10 +140,13 @@ export default function App() {
   const monthNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
   const tooltipStyle = {
-    backgroundColor: dark ? "#0f172a" : "#fff",
-    border: `1px solid ${dark ? "#334155" : "#e2e8f0"}`,
+    backgroundColor: dark ? "#1e293b" : "#ffffff",
+    border: `1px solid ${dark ? "#475569" : "#e2e8f0"}`,
     borderRadius: 10,
     fontSize: 12,
+    color: dark ? "#f1f5f9" : "#0f172a",
+    boxShadow: "0 4px 12px rgba(0,0,0,0.25)",
+    padding: "8px 12px",
   };
 
   return (
@@ -181,7 +215,7 @@ export default function App() {
               <Menu size={20} />
             </button>
             <div>
-              <h1 className="text-lg font-bold leading-tight">Asan's Trading Journey</h1>
+              <h1 className="text-lg font-bold leading-tight">Mydeen's Trading Journal</h1>
               <p className="text-[11px] text-slate-500">Synced from Notion</p>
             </div>
           </div>
@@ -276,7 +310,7 @@ export default function App() {
                           </defs>
                           <XAxis dataKey="date" tick={{ fill: dark ? "#94a3b8" : "#64748b", fontSize: 11 }} axisLine={false} tickLine={false} />
                           <YAxis tick={{ fill: dark ? "#94a3b8" : "#64748b", fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${v}`} />
-                          <Tooltip contentStyle={tooltipStyle} formatter={(v) => [formatPnl(v), "PnL"]} />
+                          <Tooltip contentStyle={tooltipStyle} itemStyle={{ color: dark ? "#f1f5f9" : "#0f172a" }} formatter={(v) => [formatPnl(v), "PnL"]} />
                           <Area type="monotone" dataKey="pnl" stroke="#ef4444" fill="url(#pnlGrad)" strokeWidth={2} />
                         </AreaChart>
                       </ResponsiveContainer>
@@ -309,6 +343,8 @@ export default function App() {
                           </Pie>
                           <Tooltip
                             contentStyle={tooltipStyle}
+                            itemStyle={{ color: dark ? "#f1f5f9" : "#0f172a" }}
+                            labelStyle={{ color: dark ? "#94a3b8" : "#64748b" }}
                             formatter={(_, __, props) => [formatPnl(props.payload.value), props.payload.name]}
                           />
                           <Legend
@@ -466,14 +502,58 @@ export default function App() {
             )}
 
             {section === "news" && (
-              <motion.div key="news" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="card p-4">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="text-sm font-semibold">Market News</div>
-                  <div className="text-[11px] text-slate-500 flex items-center gap-1.5">
-                    <span className="live-dot" /> Auto · Fed · PPI · Inflation
+              <motion.div key="news" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
+                <div className="card p-4">
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="text-sm font-semibold">Market News</div>
+                    <div className="text-[11px] text-slate-500 flex items-center gap-1.5">
+                      <span className="live-dot" /> Live · CryptoCompare
+                    </div>
                   </div>
                 </div>
-                <div className="text-center py-12 text-slate-500 text-sm">News feed coming soon</div>
+
+                {newsLoading && (
+                  <div className="card p-10 text-center text-slate-500 text-sm">Loading latest news...</div>
+                )}
+
+                {!newsLoading && news.length === 0 && (
+                  <div className="card p-10 text-center text-slate-500 text-sm">Could not load news. Try again later.</div>
+                )}
+
+                <div className="space-y-3">
+                  {news.map((n, i) => (
+                    <motion.a
+                      key={n.id || i}
+                      href={n.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: i * 0.04 }}
+                      className="card p-4 flex gap-4 hover:border-emerald-500/40 transition block"
+                    >
+                      {n.image && (
+                        <img
+                          src={n.image}
+                          alt=""
+                          className="w-16 h-16 rounded-xl object-cover shrink-0 bg-slate-100 dark:bg-slate-800"
+                          onError={(e) => { e.target.style.display = "none"; }}
+                        />
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium text-sm leading-snug line-clamp-2">{n.title}</div>
+                        <div className="text-xs text-slate-500 mt-1.5 flex items-center gap-2">
+                          <span className="font-medium text-slate-600 dark:text-slate-400">{n.source}</span>
+                          <span>·</span>
+                          <span>{n.time}</span>
+                        </div>
+                        {n.body && (
+                          <div className="text-xs text-slate-500 mt-1.5 line-clamp-2">{n.body}</div>
+                        )}
+                      </div>
+                    </motion.a>
+                  ))}
+                </div>
               </motion.div>
             )}
 
