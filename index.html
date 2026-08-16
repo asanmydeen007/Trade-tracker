@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <title>Asan's Trading Journey</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>tailwind.config = { darkMode: 'class' }</script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Inter', system-ui, sans-serif; margin: 0; }
+    .card { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; }
+    .dark .card { background: rgba(30,41,59,0.9); border-color: rgba(51,65,85,0.6); }
+    .positive { color: #16a34a; }
+    .dark .positive { color: #22c55e; }
+    .negative { color: #dc2626; }
+    .dark .negative { color: #ef4444; }
+    .live-dot { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; display: inline-block; animation: pulse 1.5s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    .drawer { transform: translateX(-100%); transition: transform 0.25s ease; }
+    .drawer.open { transform: translateX(0); }
+    .overlay { opacity: 0; pointer-events: none; transition: opacity 0.25s; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 40; }
+    .overlay.open { opacity: 1; pointer-events: auto; }
+    .cal-day { min-height: 48px; }
+    .cal-pnl-pos { background: rgba(34,197,94,0.15); }
+    .cal-pnl-neg { background: rgba(239,68,68,0.15); }
+    .pnl-pill-pos { background: #22c55e; color: white; }
+    .pnl-pill-neg { background: #ef4444; color: white; }
+    .sidebar-btn { width: 100%; display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 8px; font-size: 14px; font-weight: 500; border: none; background: transparent; cursor: pointer; text-align: left; color: #64748b; }
+    .dark .sidebar-btn { color: #94a3b8; }
+    .sidebar-btn:hover { background: #f1f5f9; }
+    .dark .sidebar-btn:hover { background: rgba(51,65,85,0.5); }
+    .sidebar-btn.active { background: rgba(16,185,129,0.12); color: #059669; }
+    .dark .sidebar-btn.active { background: rgba(34,197,94,0.12); color: #4ade80; }
+    .filter-select { border-radius: 8px; padding: 6px 10px; font-size: 12px; border: 1px solid #e2e8f0; background: #f8fafc; color: #0f172a; }
+    .dark .filter-select { border-color: #334155; background: #0f172a; color: #e2e8f0; }
+    .muted { color: #64748b; }
+    .dark .muted { color: #94a3b8; }
+    .chip-support { padding: 2px 8px; border-radius: 6px; font-size: 12px; font-weight: 600; background: rgba(16,185,129,0.12); color: #059669; }
+    .dark .chip-support { background: rgba(34,197,94,0.15); color: #4ade80; }
+    .chip-resist { padding: 2px 8px; border-radius: 6px; font-size: 12px; font-weight: 600; background: rgba(239,68,68,0.12); color: #dc2626; }
+    .dark .chip-resist { background: rgba(239,68,68,0.15); color: #f87171; }
+    .note-box { margin-top: 16px; padding: 12px; border-radius: 8px; font-size: 12px; background: #f1f5f9; color: #475569; }
+    .dark .note-box { background: rgba(15,23,42,0.6); color: #94a3b8; }
+  </style>
+</head>
+<body class="bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 min-h-screen">
+
+  <div id="overlay" class="overlay lg:hidden"></div>
+
+  <aside id="sidebar" class="drawer fixed top-0 left-0 z-50 w-72 h-full bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col lg:translate-x-0 lg:static lg:z-auto">
+    <div class="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+      <div class="font-bold text-lg">Market</div>
+      <button id="closeSidebar" class="lg:hidden p-1 rounded-md">✕</button>
+    </div>
+
+    <nav class="p-3 space-y-1 flex-1">
+      <button data-section="crypto" class="sidebar-btn active">₿ Crypto</button>
+      <button data-section="us-stocks" class="sidebar-btn">🇺🇸 US Stocks</button>
+      <button data-section="indian" class="sidebar-btn">🇮🇳 Indian Stocks</button>
+      <button data-section="forex" class="sidebar-btn">💱 Forex</button>
+      <button data-section="news" class="sidebar-btn">📰 News</button>
+      <button data-section="plan" class="sidebar-btn">📋 Trading Plan</button>
+    </nav>
+
+    <div class="p-4 border-t border-slate-200 dark:border-slate-800 text-xs text-slate-500 dark:text-slate-400 space-y-1">
+      <div>1 USD ≈ <span class="font-semibold text-slate-800 dark:text-slate-200">₹95.55</span></div>
+      <div>1 USDT ≈ <span class="font-semibold text-slate-800 dark:text-slate-200">₹95.40</span></div>
+      <div class="pt-1">Balance: <span class="font-semibold text-slate-900 dark:text-white">$925</span></div>
+    </div>
+  </aside>
+
+  <div class="flex flex-col min-h-screen lg:ml-0">
+    <header class="sticky top-0 z-30 bg-white/90 dark:bg-slate-950/90 backdrop-blur border-b border-slate-200 dark:border-slate-800 px-4 py-3 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <button id="openSidebar" class="lg:hidden p-2 -ml-1 rounded-lg text-xl">☰</button>
+        <div>
+          <h1 class="text-lg font-bold leading-tight">Asan's Trading Journey</h1>
+          <p class="text-[11px] text-slate-500">Synced from Notion</p>
+        </div>
+      </div>
+      <button id="themeToggle" class="p-2 rounded-lg text-sm">🌙</button>
+    </header>
+
+    <main class="p-4 sm:p-6 flex-1 max-w-6xl mx-auto w-full">
+      <div id="section-crypto" class="space-y-5">
+
+        <div class="card p-4 flex items-center justify-between">
+          <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-full bg-orange-500/20 flex items-center justify-center text-orange-500 font-bold text-lg">₿</div>
+            <div>
+              <div class="font-semibold">Bitcoin</div>
+              <div class="text-[11px] text-slate-500 flex items-center gap-1.5"><span class="live-dot"></span> Live</div>
+            </div>
+          </div>
+          <div class="text-right">
+            <div id="btcPrice" class="text-2xl font-bold">—</div>
+            <div id="btcInr" class="text-xs text-slate-500">—</div>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          <div class="card p-3.5 col-span-2 sm:col-span-1">
+            <div class="text-xs text-slate-500">Balance</div>
+            <div class="text-xl font-bold mt-0.5">$925</div>
+            <div class="text-xs text-slate-500">≈ ₹88,339</div>
+          </div>
+          <div class="card p-3.5">
+            <div class="text-xs text-slate-500">PnL (USDT)</div>
+            <div id="totalUsdt" class="text-xl font-bold mt-0.5">—</div>
+          </div>
+          <div class="card p-3.5">
+            <div class="text-xs text-slate-500">PnL (INR)</div>
+            <div id="totalInr" class="text-xl font-bold mt-0.5">—</div>
+          </div>
+          <div class="card p-3.5">
+            <div class="text-xs text-slate-500">Win Rate</div>
+            <div id="winRate" class="text-xl font-bold mt-0.5">—</div>
+          </div>
+          <div class="card p-3.5">
+            <div class="text-xs text-slate-500">1 USD</div>
+            <div class="text-lg font-bold mt-0.5 text-emerald-600 dark:text-emerald-400">₹95.55</div>
+          </div>
+          <div class="card p-3.5">
+            <div class="text-xs text-slate-500">1 USDT</div>
+            <div class="text-lg font-bold mt-0.5 text-emerald-600 dark:text-emerald-400">₹95.40</div>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div class="card p-4">
+            <div class="text-sm font-semibold mb-3">Cumulative PnL</div>
+            <div class="h-52"><canvas id="pnlChart"></canvas></div>
+          </div>
+          <div class="card p-4">
+            <div class="text-sm font-semibold mb-3">PnL by Pair</div>
+            <div class="h-52"><canvas id="pairChart"></canvas></div>
+          </div>
+        </div>
+
+        <div class="card p-4">
+          <div class="flex items-center justify-between mb-3">
+            <button id="prevMonth" class="p-1.5 rounded-lg">←</button>
+            <div id="calTitle" class="text-sm font-semibold">August 2026</div>
+            <button id="nextMonth" class="p-1.5 rounded-lg">→</button>
+          </div>
+          <div id="calendar" class="grid grid-cols-7 gap-1 text-center text-xs"></div>
+        </div>
+
+        <div class="card p-4">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+            <div class="text-sm font-semibold">Crypto Trades</div>
+            <div class="flex gap-2">
+              <select id="pairFilter" class="filter-select">
+                <option value="all">All Pairs</option>
+                <option value="Bitcoin">Bitcoin</option>
+                <option value="Eth">Eth</option>
+                <option value="Solana">Solana</option>
+                <option value="Sui">Sui</option>
+                <option value="Silver">Silver</option>
+              </select>
+              <select id="resultFilter" class="filter-select">
+                <option value="all">All</option>
+                <option value="Win">Win</option>
+                <option value="Loss">Loss</option>
+              </select>
+            </div>
+          </div>
+          <div id="tradesList"></div>
+        </div>
+
+        <div class="card p-4">
+          <div class="text-sm font-semibold mb-3">Spot Holdings</div>
+          <div class="text-center py-8 text-slate-500">
+            <div class="text-3xl mb-2">🪙</div>
+            <div class="font-medium">No spot holdings yet</div>
+          </div>
+        </div>
+      </div>
+
+      <div id="section-news" class="hidden space-y-4">
+        <div class="card p-4">
+          <div class="flex items-center justify-between mb-4">
+            <div class="text-sm font-semibold">Market News</div>
+            <div class="text-[11px] text-slate-500 flex items-center gap-1.5"><span class="live-dot"></span> Auto · Fed · PPI · Inflation · Geopolitics</div>
+          </div>
+          <div id="newsList" class="space-y-4"></div>
+        </div>
+      </div>
+
+      <div id="section-plan" class="hidden space-y-4">
+        <div class="card p-4">
+          <div class="text-sm font-semibold mb-4">Trading Plan · BTCUSDT</div>
+          <div class="grid sm:grid-cols-2 gap-4 text-sm">
+            <div>
+              <div class="text-xs text-slate-500 mb-1">Bias</div>
+              <div class="font-medium">Neutral-Bearish short-term</div>
+            </div>
+            <div>
+              <div class="text-xs text-slate-500 mb-1">Entry Idea</div>
+              <div class="font-medium">Watch reclaim of 63,200–63,500 with volume</div>
+            </div>
+            <div>
+              <div class="text-xs text-slate-500 mb-1">Support</div>
+              <div class="flex flex-wrap gap-2 mt-1">
+                <span class="chip-support">61,500</span>
+                <span class="chip-support">59,800</span>
+                <span class="chip-support">58,000</span>
+              </div>
+            </div>
+            <div>
+              <div class="text-xs text-slate-500 mb-1">Resistance</div>
+              <div class="flex flex-wrap gap-2 mt-1">
+                <span class="chip-resist">64,500</span>
+                <span class="chip-resist">66,200</span>
+                <span class="chip-resist">68,500</span>
+              </div>
+            </div>
+            <div>
+              <div class="text-xs text-slate-500 mb-1">Stop Loss</div>
+              <div class="font-medium negative">Below 61,200</div>
+            </div>
+            <div>
+              <div class="text-xs text-slate-500 mb-1">Take Profit</div>
+              <div class="space-y-0.5 font-medium positive">
+                <div>TP1: 64,800</div>
+                <div>TP2: 66,200</div>
+                <div>TP3: 68,500</div>
+              </div>
+            </div>
+          </div>
+          <div class="note-box">
+            Portfolio is deep red after Silver -$400. Prefer waiting for clear structure. Risk only 0.5–1% per idea until equity recovers.
+          </div>
+        </div>
+      </div>
+
+      <div id="section-us-stocks" class="hidden">
+        <div class="card p-10 text-center">
+          <div class="text-5xl mb-4">🏴‍☠️</div>
+          <h2 class="text-xl font-bold mb-2">US Stocks</h2>
+          <p class="text-slate-500 text-sm">No holdings yet.</p>
+        </div>
+      </div>
+      <div id="section-indian" class="hidden">
+        <div class="card p-10 text-center">
+          <div class="text-5xl mb-4">🚀</div>
+          <h2 class="text-xl font-bold mb-2">Indian Stocks</h2>
+          <p class="text-slate-500 text-sm">No positions yet.</p>
+        </div>
+      </div>
+      <div id="section-forex" class="hidden">
+        <div class="card p-10 text-center">
+          <div class="text-5xl mb-4">🌊</div>
+          <h2 class="text-xl font-bold mb-2">Forex</h2>
+          <p class="text-slate-500 text-sm">No positions yet.</p>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    const TRADES = [
+      { date: "2026-08-16", pair: "Silver", symbol: "XAGUSDT", pnl: -400, icon: "⚪", color: "#94a3b8" },
+      { date: "2026-08-15", pair: "Sui", symbol: "SUIUSDT", pnl: -40, icon: "💧", color: "#38bdf8" },
+      { date: "2026-08-15", pair: "Solana", symbol: "SOLUSDT", pnl: 10, icon: "◎", color: "#a855f7" },
+      { date: "2026-08-15", pair: "Eth", symbol: "ETHUSDT", pnl: 15, icon: "◆", color: "#627eea" },
+      { date: "2026-08-15", pair: "Silver", symbol: "XAGUSDT", pnl: -15, icon: "⚪", color: "#94a3b8" },
+      { date: "2026-08-14", pair: "Bitcoin", symbol: "BTCUSDT", pnl: 39, icon: "₿", color: "#f7931a" },
+      { date: "2026-08-14", pair: "Bitcoin", symbol: "BTCUSDT", pnl: 20, icon: "₿", color: "#f7931a" }
+    ];
+
+    const USDT_INR = 95.40;
+    const PAIR_COLORS = { Bitcoin: "#f7931a", Eth: "#627eea", Solana: "#a855f7", Sui: "#38bdf8", Silver: "#94a3b8" };
+
+    const NEWS = [
+      { tag: "Fed", impact: "high", title: "Markets watch Fed speakers for any shift in rate-cut timing", source: "Reuters", time: "Just now" },
+      { tag: "PPI", impact: "high", title: "US Producer Price Index data due — traders positioned for volatility", source: "Bloomberg", time: "1h ago" },
+      { tag: "Inflation", impact: "high", title: "Core inflation path remains key for September rate decision odds", source: "WSJ", time: "3h ago" },
+      { tag: "Geopolitics", impact: "medium", title: "Middle East developments continue to support safe-haven flows", source: "CNBC", time: "5h ago" },
+      { tag: "Crypto", impact: "medium", title: "Bitcoin holds structure as ETF flows stay in focus this week", source: "CoinDesk", time: "6h ago" },
+      { tag: "Calendar", impact: "high", title: "Next 48h: Watch PPI, Fed speak, and any geopolitical headlines", source: "Desk", time: "Updated" }
+    ];
+
+    let calYear = 2026, calMonth = 7;
+    let pnlChart = null, pairChart = null;
+
+    function fmt(n) { return (n >= 0 ? "+$" : "-$") + Math.abs(n); }
+    function fmtInr(n) { return (n >= 0 ? "₹" : "-₹") + Math.abs(Math.round(n)).toLocaleString("en-IN"); }
+    function fmtDate(d) { return new Date(d + "T00:00:00").toLocaleDateString("en-IN", { day: "numeric", month: "short" }); }
+
+    function renderNews() {
+      const el = document.getElementById("newsList");
+      if (!el) return;
+      el.innerHTML = NEWS.map(n => `
+        <div style="padding-bottom:16px;border-bottom:1px solid rgba(148,163,184,0.3);">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+            <span style="font-size:11px;font-weight:700;padding:3px 8px;border-radius:6px;background:${n.impact==='high'?'rgba(239,68,68,0.15)':'rgba(245,158,11,0.15)'};color:${n.impact==='high'?'#ef4444':'#d97706'}">${n.tag}</span>
+            <span style="font-size:11px;color:#94a3b8">${n.time}</span>
+          </div>
+          <div style="font-weight:600;font-size:14px;line-height:1.4">${n.title}</div>
+          <div style="font-size:12px;color:#64748b;margin-top:4px">${n.source}</div>
+        </div>
+      `).join("");
+    }
+
+    async function fetchBtc() {
+      try {
+        const res = await fetch("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT");
+        const data = await res.json();
+        const usd = parseFloat(data.price);
+        document.getElementById("btcPrice").textContent = "$" + usd.toLocaleString("en-US", { maximumFractionDigits: 0 });
+        document.getElementById("btcInr").textContent = "₹" + Math.round(usd * 95.55).toLocaleString("en-IN");
+      } catch (e) { console.error(e); }
+    }
+
+    function renderCalendar() {
+      const months = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+      document.getElementById("calTitle").textContent = months[calMonth] + " " + calYear;
+      const firstDay = new Date(calYear, calMonth, 1).getDay();
+      const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
+      const dayPnL = {};
+      TRADES.forEach(t => {
+        const parts = t.date.split("-").map(Number);
+        if (parts[0] === calYear && parts[1] - 1 === calMonth) dayPnL[parts[2]] = (dayPnL[parts[2]] || 0) + t.pnl;
+      });
+      let html = ["S","M","T","W","T","F","S"].map(d => `<div style="color:#94a3b8;font-weight:500;padding:4px 0;font-size:11px">${d}</div>`).join("");
+      for (let i = 0; i < firstDay; i++) html += "<div></div>";
+      for (let d = 1; d <= daysInMonth; d++) {
+        const pnl = dayPnL[d];
+        let extra = "", bg = "";
+        if (pnl !== undefined) {
+          bg = pnl >= 0 ? "cal-pnl-pos" : "cal-pnl-neg";
+          extra = `<div class="${pnl>=0?'positive':'negative'}" style="font-size:10px;font-weight:700">${fmt(pnl)}</div>`;
+        }
+        html += `<div class="cal-day ${bg}" style="border-radius:8px;padding:4px;display:flex;flex-direction:column;align-items:center;justify-content:center"><div style="font-weight:500;font-size:12px">${d}</div>${extra}</div>`;
+      }
+      document.getElementById("calendar").innerHTML = html;
+    }
+
+    function render() {
+      try {
+        const pairF = document.getElementById("pairFilter").value;
+        const resF = document.getElementById("resultFilter").value;
+        const filtered = TRADES.filter(t => {
+          if (pairF !== "all" && t.pair !== pairF) return false;
+          if (resF === "Win" && t.pnl < 0) return false;
+          if (resF === "Loss" && t.pnl >= 0) return false;
+          return true;
+        });
+
+        document.getElementById("tradesList").innerHTML = filtered.map(t => `
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 0;border-bottom:1px solid rgba(148,163,184,0.25);gap:12px">
+            <div style="display:flex;align-items:center;gap:12px;min-width:0">
+              <div style="width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0;background:${t.color}22;color:${t.color}">${t.icon}</div>
+              <div style="min-width:0">
+                <div style="font-weight:600;font-size:14px">${t.symbol}</div>
+                <div style="font-size:12px;color:#94a3b8">${t.pair} · ${fmtDate(t.date)}</div>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+              <span class="${t.pnl>=0?'positive':'negative'}" style="font-weight:600;font-size:14px">${fmt(t.pnl)}</span>
+              <span class="${t.pnl>=0?'pnl-pill-pos':'pnl-pill-neg'}" style="font-size:11px;font-weight:600;padding:4px 10px;border-radius:6px">${t.pnl>=0?'Win':'Loss'}</span>
+            </div>
+          </div>
+        `).join("");
+
+        const total = TRADES.reduce((s, t) => s + t.pnl, 0);
+        const wins = TRADES.filter(t => t.pnl > 0).length;
+        const totalUsdt = document.getElementById("totalUsdt");
+        const totalInr = document.getElementById("totalInr");
+        const winRate = document.getElementById("winRate");
+        totalUsdt.textContent = fmt(total);
+        totalUsdt.className = "text-xl font-bold mt-0.5 " + (total >= 0 ? "positive" : "negative");
+        totalInr.textContent = fmtInr(total * USDT_INR);
+        totalInr.className = "text-xl font-bold mt-0.5 " + (total >= 0 ? "positive" : "negative");
+        winRate.textContent = Math.round((wins / TRADES.length) * 100) + "%";
+
+        const sorted = [...TRADES].sort((a, b) => a.date.localeCompare(b.date) || a.pair.localeCompare(b.pair));
+        let cum = 0;
+        const labels = [], data = [], meta = [];
+        sorted.forEach(t => { cum += t.pnl; labels.push(t.pair); data.push(+cum.toFixed(2)); meta.push({ date: t.date, pair: t.pair, pnl: t.pnl, cum }); });
+        const finalNeg = data[data.length - 1] < 0;
+        const lineColor = finalNeg ? "#ef4444" : "#22c55e";
+
+        if (pnlChart) { try { pnlChart.destroy(); } catch(e) {} }
+        const pnlCanvas = document.getElementById("pnlChart");
+        if (pnlCanvas && typeof Chart !== "undefined") {
+          pnlChart = new Chart(pnlCanvas, {
+            type: "line",
+            data: { labels, datasets: [{ data, borderColor: lineColor, backgroundColor: finalNeg ? "rgba(239,68,68,0.12)" : "rgba(34,197,94,0.12)", fill: true, tension: 0.35, pointRadius: 4, pointBackgroundColor: lineColor, borderWidth: 2.5 }] },
+            options: {
+              responsive: true, maintainAspectRatio: false,
+              plugins: {
+                legend: { display: false },
+                tooltip: { callbacks: {
+                  title: (items) => meta[items[0].dataIndex].pair + " · " + fmtDate(meta[items[0].dataIndex].date),
+                  label: (item) => { const m = meta[item.dataIndex]; return ["Trade: " + fmt(m.pnl), "Cumulative: " + fmt(m.cum)]; }
+                }}
+              },
+              scales: { x: { display: false }, y: { ticks: { color: "#94a3b8", callback: v => "$" + v }, grid: { color: "rgba(148,163,184,0.08)" } } }
+            }
+          });
+        }
+
+        const byPair = {};
+        TRADES.forEach(t => { byPair[t.pair] = (byPair[t.pair] || 0) + t.pnl; });
+        if (pairChart) { try { pairChart.destroy(); } catch(e) {} }
+        const pairCanvas = document.getElementById("pairChart");
+        if (pairCanvas && typeof Chart !== "undefined") {
+          pairChart = new Chart(pairCanvas, {
+            type: "doughnut",
+            data: { labels: Object.keys(byPair), datasets: [{ data: Object.values(byPair), backgroundColor: Object.keys(byPair).map(p => PAIR_COLORS[p] || "#64748b"), borderWidth: 0 }] },
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: "bottom", labels: { color: "#94a3b8", padding: 10, font: { size: 11 } } } } }
+          });
+        }
+
+        renderCalendar();
+      } catch (err) { console.error("render error", err); }
+    }
+
+    const sidebar = document.getElementById("sidebar");
+    const overlay = document.getElementById("overlay");
+
+    document.getElementById("openSidebar").addEventListener("click", function() {
+      sidebar.classList.add("open"); overlay.classList.add("open");
+    });
+    document.getElementById("closeSidebar").addEventListener("click", function() {
+      sidebar.classList.remove("open"); overlay.classList.remove("open");
+    });
+    overlay.addEventListener("click", function() {
+      sidebar.classList.remove("open"); overlay.classList.remove("open");
+    });
+
+    document.querySelectorAll(".sidebar-btn").forEach(function(btn) {
+      btn.addEventListener("click", function() {
+        document.querySelectorAll(".sidebar-btn").forEach(function(b) { b.classList.remove("active"); });
+        btn.classList.add("active");
+        document.querySelectorAll("[id^=section-]").forEach(function(s) { s.classList.add("hidden"); });
+        var sec = document.getElementById("section-" + btn.getAttribute("data-section"));
+        if (sec) sec.classList.remove("hidden");
+        sidebar.classList.remove("open"); overlay.classList.remove("open");
+        if (btn.getAttribute("data-section") === "news") renderNews();
+      });
+    });
+
+    document.getElementById("prevMonth").addEventListener("click", function() {
+      calMonth--; if (calMonth < 0) { calMonth = 11; calYear--; } renderCalendar();
+    });
+    document.getElementById("nextMonth").addEventListener("click", function() {
+      calMonth++; if (calMonth > 11) { calMonth = 0; calYear++; } renderCalendar();
+    });
+
+    function updateThemeIcon() {
+      const btn = document.getElementById("themeToggle");
+      btn.textContent = document.documentElement.classList.contains("dark") ? "☀️" : "🌙";
+    }
+    document.getElementById("themeToggle").addEventListener("click", function() {
+      document.documentElement.classList.toggle("dark");
+      localStorage.setItem("theme", document.documentElement.classList.contains("dark") ? "dark" : "light");
+      updateThemeIcon();
+    });
+    if (localStorage.getItem("theme") === "light") document.documentElement.classList.remove("dark");
+    updateThemeIcon();
+
+    document.getElementById("pairFilter").addEventListener("change", render);
+    document.getElementById("resultFilter").addEventListener("change", render);
+
+    renderNews();
+    render();
+    fetchBtc();
+    setInterval(fetchBtc, 15000);
+  </script>
+</body>
+</html>
