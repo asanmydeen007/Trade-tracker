@@ -45,7 +45,19 @@ export default async function handler(req, res) {
 
       if (!r.ok) {
         const err = await r.text();
-        return res.status(r.status).json({ error: err, trades: null, source: "notion_error" });
+        let hint = "";
+        try {
+          const j = JSON.parse(err);
+          if (j?.code === "object_not_found") {
+            hint = "Share Trade PnL Tracker with your Notion integration (··· → Connections).";
+          }
+        } catch {}
+        return res.status(r.status).json({
+          error: err,
+          hint,
+          trades: null,
+          source: "notion_error",
+        });
       }
 
       const data = await r.json();
