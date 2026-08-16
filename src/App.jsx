@@ -47,18 +47,64 @@ export default function App() {
     document.documentElement.classList.toggle("dark", dark);
   }, [dark]);
 
-  // Claude / AI BTC analysis (cached ~4h server-side)
+  // AI BTC analysis — try /api/btc-analysis, fallback to client Binance rules engine
   useEffect(() => {
     let cancelled = false;
+
+    const buildLocal = (s) => {
+      const ch = s.change24hPct;
+      const mid = (s.high24h + s.low24h) / 2;
+      const range = s.high24h - s.low24h;
+      const pos = range > 0 ? (s.price - s.low24h) / range : 0.5;
+      const momentum =
+        ch > 2 ? "Bullish momentum over the last 24h — buyers are in control."
+        : ch < -2 ? "Bearish momentum over the last 24h — sellers have the edge."
+        : "Sideways / balanced tape over the last 24h — wait for expansion.";
+      const levels = `Key range: support near $${Math.round(s.low24h).toLocaleString()} and resistance near $${Math.round(s.high24h).toLocaleString()}. Mid-range ≈ $${Math.round(mid).toLocaleString()}.`;
+      const position =
+        pos > 0.7 ? "Price is in the upper third of the 24h range — avoid chasing longs."
+        : pos < 0.3 ? "Price is in the lower third of the 24h range — bounce longs need confirmation."
+        : "Price is mid-range — prefer trading the edges.";
+      const bias = ch > 1.5 ? "Bias: Neutral-Bullish" : ch < -1.5 ? "Bias: Neutral-Bearish" : "Bias: Neutral";
+      return {
+        analysis: `${bias}\n\n${momentum}\n\n${levels}\n\n${position}\n\nPlan: risk only 0.5–1% per idea. Prefer confirmation at range edges. Not financial advice.\n\nSpot: $${s.price.toLocaleString(undefined, { maximumFractionDigits: 0 })} · 24h ${ch >= 0 ? "+" : ""}${ch.toFixed(2)}%`,
+        snapshot: s,
+        generatedAt: new Date().toISOString(),
+        source: "local",
+      };
+    };
+
     const load = async () => {
       setBtcAiLoading(true);
       try {
+        // 1) Prefer serverless analysis
         const res = await fetch("/api/btc-analysis");
-        const data = await res.json();
-        if (cancelled) return;
-        if (!res.ok) throw new Error(data?.error || "Failed to load analysis");
-        setBtcAi(data);
-        setBtcAiError(null);
+        const ct = res.headers.get("content-type") || "";
+        if (res.ok && ct.includes("application/json")) {
+          const data = await res.json();
+          if (!cancelled && data?.analysis && data?.snapshot) {
+            setBtcAi(data);
+            setBtcAiError(null);
+            setBtcAiLoading(false);
+            return;
+          }
+        }
+
+        // 2) Client fallback via Binance 24h ticker
+        const b = await fetch("https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT");
+        const d = await b.json();
+        const snapshot = {
+          price: parseFloat(d.lastPrice),
+          change24hPct: parseFloat(d.priceChangePercent),
+          high24h: parseFloat(d.highPrice),
+          low24h: parseFloat(d.lowPrice),
+          volume24h: parseFloat(d.quoteVolume),
+          asOf: new Date().toISOString(),
+        };
+        if (!cancelled) {
+          setBtcAi(buildLocal(snapshot));
+          setBtcAiError(null);
+        }
       } catch (e) {
         if (!cancelled) setBtcAiError(String(e?.message || e));
       } finally {
@@ -903,7 +949,7 @@ export default function App() {
               <div className="card p-4">
                 <div className="flex items-center justify-between mb-4 gap-2">
                   <div className="flex items-center gap-2">
-                    <div className="text-sm font-semibold">AI Trading Plan · BTC</div>
+                    <div className="text-sm font-semibold">Claude AI Analysis — BTC</div>
                     <span className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-600 dark:text-indigo-300 border border-indigo-500/20">
                       AI
                     </span>
