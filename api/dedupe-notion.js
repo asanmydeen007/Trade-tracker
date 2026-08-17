@@ -106,20 +106,28 @@ export default async function handler(req, res) {
       toArchive.push(...extras);
     }
 
+    // Process in small batches to avoid Notion rate limits
+    const limit = Math.min(Number(req.query?.limit) || 25, 50);
+    const offset = Math.max(Number(req.query?.offset) || 0, 0);
+    const batch = toArchive.slice(offset, offset + limit);
+
     let archived = 0;
     const errors = [];
     if (!dry) {
-      for (const page of toArchive) {
+      for (const page of batch) {
         try {
           await notion(`/pages/${page.id}`, {
             method: "PATCH",
             body: JSON.stringify({ archived: true }),
           });
           archived++;
-          // light rate limit
-          await new Promise((r) => setTimeout(r, 80));
+          await new Promise((r) => setTimeout(r, 350));
         } catch (e) {
           errors.push({ id: page.id, error: e.message });
+          // backoff on rate limit
+          if (String(e.message).includes("rate") || String(e.message).includes("429")) {
+            await new Promise((r) => setTimeout(r, 2000));
+          }
         }
       }
     }
@@ -131,9 +139,14 @@ export default async function handler(req, res) {
       uniqueKeys: groups.size,
       duplicateGroups: duplicateGroups.length,
       wouldArchive: toArchive.length,
+      batchSize: batch.length,
+      offset,
+      limit,
+      nextOffset: offset + batch.length < toArchive.length ? offset + batch.length : null,
       archived,
-      samples: duplicateGroups.slice(0, 15),
+      samples: duplicateGroups.slice(0, 10),
       errors: errors.slice(0, 10),
+      tip: "If rate limited, wait 1 min then call again with ?offset=NEXT",
     });
   } catch (err) {
     console.error("[dedupe-notion]", err);
