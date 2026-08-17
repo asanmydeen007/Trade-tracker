@@ -13,7 +13,7 @@
  */
 import { createRequire } from "module";
 const require = createRequire(import.meta.url);
-const nacl = require("../lib/nacl.js");
+const nacl = require("../lib/nacl.cjs");
 
 const NOTION_DB_ID =
   process.env.NOTION_TRADES_DB_ID || "ec99900ead0d4744a1ecf60598e08f32";
