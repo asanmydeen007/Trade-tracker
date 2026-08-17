@@ -152,7 +152,7 @@ async function fetchFuturesOrdersSide(side, maxPages = 3) {
         status: "filled,partially_filled,partially_cancelled,cancelled",
         side,
         page: String(page),
-        size: "100",
+        size: "20",
         margin_currency_short_name: ["USDT", "INR"],
       },
       { seconds: true }
@@ -160,14 +160,14 @@ async function fetchFuturesOrdersSide(side, maxPages = 3) {
     if (!r.ok) return { list: all, error: r.json || r.text, status: r.status };
     const batch = asList(r.json);
     all.push(...batch);
-    if (batch.length < 100) break;
+    if (batch.length < 20) break;
     await new Promise((x) => setTimeout(x, 50));
   }
   return { list: all, error: null, status: 200 };
 }
 
 /** Paginated futures position transactions */
-async function fetchFuturesTx(maxPages = 5) {
+async function fetchFuturesTx(maxPages = 1, pageSize = 20) {
   const all = [];
   for (let page = 1; page <= maxPages; page++) {
     const r = await coindcxPost(
@@ -175,7 +175,7 @@ async function fetchFuturesTx(maxPages = 5) {
       {
         stage: "all",
         page: String(page),
-        size: "100",
+        size: String(pageSize),
         margin_currency_short_name: ["USDT", "INR"],
       },
       { seconds: true }
@@ -183,8 +183,7 @@ async function fetchFuturesTx(maxPages = 5) {
     if (!r.ok) return { list: all, error: r.json || r.text, status: r.status };
     const batch = asList(r.json);
     all.push(...batch);
-    if (batch.length < 100) break;
-    await new Promise((x) => setTimeout(x, 50));
+    if (batch.length < pageSize) break;
   }
   return { list: all, error: null, status: 200 };
 }
@@ -380,7 +379,8 @@ export default async function handler(req, res) {
           const seen = new Set();
           const errors = [];
           const meta = {};
-          const tx = await fetchFuturesTx(globalThis.__CDX_PAGES);
+          const limit = Math.min(Number(req.query?.limit) || 20, 50);
+          const tx = await fetchFuturesTx(1, limit);
           meta.tx = { status: tx.status, count: tx.list.length, error: tx.error };
           const amountSamples = [];
           for (const t of tx.list) {
