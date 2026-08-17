@@ -145,6 +145,21 @@ export default async function handler(req, res) {
       const { from, to } = monthBounds(month);
       const results = {};
 
+      // Optional: ?date=2026-01-30 → probe the 7-day window containing that day
+      const dateStr = (req.query?.date || "").trim();
+      let dayWindow = null;
+      if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+        const [yy, mm, dd] = dateStr.split("-").map(Number);
+        const dayStart = Date.UTC(yy, mm - 1, dd, 0, 0, 0, 0);
+        const dayEnd = Date.UTC(yy, mm - 1, dd, 23, 59, 59, 999);
+        // 7-day window ending on that day
+        dayWindow = {
+          from: dayStart - 6 * 24 * 60 * 60 * 1000,
+          to: dayEnd,
+          date: dateStr,
+        };
+      }
+
       // A) closed orders — no time filter (last 7 days only)
       results.closed_no_time = await csFetch(
         "POST",
@@ -179,6 +194,30 @@ export default async function handler(req, res) {
           to_time: firstWin.to,
         }
       );
+
+      if (dayWindow) {
+        results.closed_on_date = await csFetch(
+          "POST",
+          "/trade/api/v2/futures/orders/closed",
+          {},
+          {
+            exchange: "EXCHANGE_2",
+            limit: 50,
+            from_time: dayWindow.from,
+            to_time: dayWindow.to,
+          }
+        );
+        results.tx_on_date = await csFetch(
+          "GET",
+          "/trade/api/v2/futures/transactions",
+          {
+            exchange: "EXCHANGE_2",
+            from_time: dayWindow.from,
+            to_time: dayWindow.to,
+            limit: 100,
+          }
+        );
+      }
 
       // D) transactions no time
       results.tx_no_time = await csFetch(
@@ -230,12 +269,15 @@ export default async function handler(req, res) {
         mode: "probe",
         month,
         monthMs: { from, to },
+        dayWindow,
         summary,
         // full raw for the most useful ones (truncated)
         closed_with_time: results.closed_with_time.json,
         closed_7day: results.closed_7day.json,
         tx_with_time: results.tx_with_time.json,
         closed_no_time: results.closed_no_time.json,
+        closed_on_date: results.closed_on_date?.json || null,
+        tx_on_date: results.tx_on_date?.json || null,
       });
     }
 
