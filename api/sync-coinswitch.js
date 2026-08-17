@@ -91,7 +91,7 @@ function signRequest(method, path, query = {}) {
   };
 }
 
-async function fetchPnlTransactions(days = 30, debug = false) {
+async function fetchPnlTransactions(days = 7, debug = false) {
   const to = Date.now();
   const from = to - days * 24 * 60 * 60 * 1000;
 
@@ -101,10 +101,8 @@ async function fetchPnlTransactions(days = 30, debug = false) {
   };
 
   // Optional filters — only add if needed
-  if (days && days < 90) {
-    query.from_time = from;
-    query.to_time = to;
-  }
+  query.from_time = from;
+  query.to_time = to;
   query.limit = 50;
 
   const signed = signRequest(
@@ -193,7 +191,8 @@ export default async function handler(req, res) {
       });
     }
 
-    const days = Math.min(Number(req.query?.days) || 30, 90);
+    // CoinSwitch rejects windows longer than ~7 days with "Malformed request data"
+    const days = Math.min(Number(req.query?.days) || 7, 7);
     const { data: transactions, debug } = await fetchPnlTransactions(days, isDebug);
 
     if (isDebug) {
