@@ -1,10 +1,8 @@
 /**
- * CoinSwitch → Notion Trade PnL Tracker
- * Pulls up to 1 year of history in 7-day windows.
+ * CoinSwitch → Notion Trade PnL Tracker (month-by-month)
  *
- * ?mode=year     → fetch last 365 days and write to Notion
- * ?mode=transactions|closed|balance → probe endpoints
- * ?days=7        → optional, used by year mode window size
+ * ?mode=month&month=2026-07   → sync that month (default: current month)
+ * ?mode=transactions|closed|balance → probe
  */
 import { createRequire } from "module";
 const require = createRequire(import.meta.url);
@@ -13,8 +11,7 @@ const nacl = require("../lib/nacl.cjs");
 const NOTION_DB_ID =
   process.env.NOTION_TRADES_DB_ID || "ec99900ead0d4744a1ecf60598e08f32";
 const BASE_URL = "https://coinswitch.co";
-const WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
-const YEAR_MS = 365 * 24 * 60 * 60 * 1000;
+const WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 const SYMBOL_TO_PAIR = {
   BTCUSDT: "Bitcoin",
@@ -49,27 +46,20 @@ function signRequest(method, path, query = {}, bodyObj = null) {
   const secretHex = process.env.COINSWITCH_API_SECRET;
   if (!apiKey || !secretHex) throw new Error("Missing CoinSwitch keys");
 
-  const pairs = Object.keys(query)
-    .sort()
-    .map((k) => `${k}=${query[k]}`);
+  const pairs = Object.keys(query).sort().map((k) => `${k}=${query[k]}`);
   const qs = pairs.join("&");
   const fullPath = qs ? `${path}?${qs}` : path;
-
   const epoch = String(Date.now());
   const message = method.toUpperCase() + fullPath + epoch;
   const messageBytes = new TextEncoder().encode(message);
 
   const seed = Uint8Array.from(Buffer.from(secretHex.trim(), "hex"));
   let secretKey;
-  if (seed.length === 32) {
-    secretKey = nacl.sign.keyPair.fromSeed(seed).secretKey;
-  } else if (seed.length === 64) {
-    secretKey = seed;
-  } else {
-    throw new Error(`Bad secret length ${seed.length}`);
-  }
-  const signature = nacl.sign.detached(messageBytes, secretKey);
+  if (seed.length === 32) secretKey = nacl.sign.keyPair.fromSeed(seed).secretKey;
+  else if (seed.length === 64) secretKey = seed;
+  else throw new Error(`Bad secret length ${seed.length}`);
 
+  const signature = nacl.sign.detached(messageBytes, secretKey);
   return {
     headers: {
       "Content-Type": "application/json",
@@ -87,7 +77,6 @@ async function csFetch(method, path, query = {}, bodyObj = null) {
   const signed = signRequest(method, path, query, bodyObj);
   const opts = { method, headers: signed.headers };
   if (bodyObj && method !== "GET") opts.body = signed.body;
-
   const res = await fetch(signed.url, opts);
   const text = await res.text();
   let json;
@@ -110,7 +99,6 @@ async function csFetch(method, path, query = {}, bodyObj = null) {
 async function createNotionPage({ pair, pnl, date }) {
   const token = process.env.NOTION_TOKEN;
   if (!token) throw new Error("NOTION_TOKEN missing");
-
   const body = {
     parent: { database_id: NOTION_DB_ID },
     properties: {
@@ -120,7 +108,6 @@ async function createNotionPage({ pair, pnl, date }) {
       "PnL USDT": { number: pnl },
     },
   };
-
   const res = await fetch("https://api.notion.com/v1/pages", {
     method: "POST",
     headers: {
@@ -136,10 +123,17 @@ async function createNotionPage({ pair, pnl, date }) {
 
 function isPnlType(type) {
   const t = String(type || "").toUpperCase().replace(/\s+/g, "");
-  return t.includes("PNL") || t === "P&L" || t === "REALIZEDPNL" || t === "REALISEDPNL";
+  return t.includes("PNL") || t === "P&L";
 }
 
-/** Fetch transactions for one 7-day window */
+/** Month start/end in ms (UTC) */
+function monthRange(yyyyMm) {
+  const [y, m] = yyyyMm.split("-").map(Number);
+  const from = Date.UTC(y, m - 1, 1, 0, 0, 0, 0);
+  const to = Date.UTC(y, m, 0, 23, 59, 59, 999); // last day of month
+  return { from, to, label: yyyyMm };
+}
+
 async function fetchTxWindow(fromMs, toMs) {
   try {
     const { json } = await csFetch("GET", "/trade/api/v2/futures/transactions", {
@@ -150,7 +144,6 @@ async function fetchTxWindow(fromMs, toMs) {
     });
     return Array.isArray(json.data) ? json.data : [];
   } catch (e) {
-    // Fallback: no time filter if window rejected
     if (String(e.message).includes("400")) {
       const { json } = await csFetch("GET", "/trade/api/v2/futures/transactions", {
         exchange: "EXCHANGE_2",
@@ -161,7 +154,6 @@ async function fetchTxWindow(fromMs, toMs) {
   }
 }
 
-/** Fetch closed orders for one window (POST) */
 async function fetchClosedWindow(fromMs, toMs) {
   try {
     const body = {
@@ -170,12 +162,7 @@ async function fetchClosedWindow(fromMs, toMs) {
       from_time: fromMs,
       to_time: toMs,
     };
-    const { json } = await csFetch(
-      "POST",
-      "/trade/api/v2/futures/orders/closed",
-      {},
-      body
-    );
+    const { json } = await csFetch("POST", "/trade/api/v2/futures/orders/closed", {}, body);
     return json?.data?.orders || json?.data || [];
   } catch {
     return [];
@@ -195,9 +182,8 @@ export default async function handler(req, res) {
       return res.status(500).json({ ok: false, error: "Missing NOTION_TOKEN" });
     }
 
-    const mode = req.query?.mode || "year";
+    const mode = req.query?.mode || "month";
 
-    // --- probe modes ---
     if (mode === "transactions") {
       const { json, debug } = await csFetch("GET", "/trade/api/v2/futures/transactions", {
         exchange: "EXCHANGE_2",
@@ -226,22 +212,28 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true, mode, data: json, debug });
     }
 
-    // --- YEAR sync (default) ---
-    // Walk back up to 365 days in 7-day windows
-    const now = Date.now();
-    const start = now - YEAR_MS;
-    const allPnl = []; // { pair, pnl, date, source, id }
+    // --- MONTH sync ---
+    const now = new Date();
+    const defaultMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+    const monthStr = (req.query?.month || defaultMonth).trim();
+    if (!/^\d{4}-\d{2}$/.test(monthStr)) {
+      return res.status(400).json({
+        ok: false,
+        error: "Use month=YYYY-MM e.g. month=2026-07",
+      });
+    }
+
+    const { from: monthStart, to: monthEnd } = monthRange(monthStr);
+    const allPnl = [];
     const seen = new Set();
-    let windows = 0;
     let txTotal = 0;
     let orderTotal = 0;
     const errors = [];
 
-    for (let to = now; to > start; to -= WINDOW_MS) {
-      const from = Math.max(start, to - WINDOW_MS);
-      windows++;
+    // Walk the month in 7-day windows
+    for (let to = monthEnd; to > monthStart; to -= WINDOW_MS) {
+      const from = Math.max(monthStart, to - WINDOW_MS + 1);
 
-      // 1) Transactions
       try {
         const txs = await fetchTxWindow(from, to);
         txTotal += txs.length;
@@ -249,53 +241,38 @@ export default async function handler(req, res) {
           if (!isPnlType(tx.type)) continue;
           const amount = parseFloat(tx.amount);
           if (!amount || Number.isNaN(amount)) continue;
-          const id = tx.transaction_id || `${tx.symbol}-${tx.amount}-${tx.type}`;
+          const id = tx.transaction_id || `tx-${tx.symbol}-${tx.amount}-${tx.type}`;
           if (seen.has(id)) continue;
           seen.add(id);
           let date = new Date(to).toISOString().slice(0, 10);
           const ts = Number(tx.timestamp || tx.created_at || tx.time);
           if (ts > 1e11) date = new Date(ts).toISOString().slice(0, 10);
-          allPnl.push({
-            pair: mapPair(tx.symbol),
-            pnl: amount,
-            date,
-            source: "tx",
-            id,
-          });
+          allPnl.push({ pair: mapPair(tx.symbol), pnl: amount, date, source: "tx", id });
         }
       } catch (e) {
-        errors.push({ window: [from, to], error: e.message });
+        errors.push({ type: "tx", error: e.message });
       }
 
-      // 2) Closed orders with realised_pnl
       try {
         const orders = await fetchClosedWindow(from, to);
         orderTotal += Array.isArray(orders) ? orders.length : 0;
         for (const o of orders || []) {
           const amount = parseFloat(o.realised_pnl || o.realized_pnl || 0);
           if (!amount || Number.isNaN(amount)) continue;
-          const id = o.order_id || `order-${o.symbol}-${o.updated_at}`;
+          const id = o.order_id || `ord-${o.symbol}-${o.updated_at}`;
           if (seen.has(id)) continue;
           seen.add(id);
           const ts = Number(o.updated_at || o.created_at || to);
           const date = new Date(ts > 1e11 ? ts : to).toISOString().slice(0, 10);
-          allPnl.push({
-            pair: mapPair(o.symbol),
-            pnl: amount,
-            date,
-            source: "order",
-            id,
-          });
+          allPnl.push({ pair: mapPair(o.symbol), pnl: amount, date, source: "order", id });
         }
       } catch (e) {
-        errors.push({ window: [from, to], orderError: e.message });
+        errors.push({ type: "order", error: e.message });
       }
 
-      // Avoid rate limits
-      await new Promise((r) => setTimeout(r, 200));
+      await new Promise((r) => setTimeout(r, 150));
     }
 
-    // Write to Notion
     let created = 0;
     let failed = 0;
     const results = [];
@@ -312,15 +289,15 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       ok: true,
-      mode: "year",
-      windows,
+      mode: "month",
+      month: monthStr,
       txFetched: txTotal,
       ordersFetched: orderTotal,
       uniquePnl: allPnl.length,
       created,
       failed,
-      results: results.slice(0, 50), // cap response size
-      errors: errors.slice(0, 10),
+      results,
+      errors: errors.slice(0, 5),
       syncedAt: new Date().toISOString(),
     });
   } catch (err) {
