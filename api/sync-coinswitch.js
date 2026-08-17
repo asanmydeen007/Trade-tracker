@@ -93,9 +93,10 @@ async function fetchPnlTransactions(days = 30) {
   const to = Date.now();
   const from = to - days * 24 * 60 * 60 * 1000;
 
+  // Do NOT put type=P&L in the query string — the & breaks URL decoding
+  // used in CoinSwitch's signature verification. Filter client-side instead.
   const query = {
     exchange: "EXCHANGE_2",
-    type: "P&L",
     limit: 100,
     from_time: from,
     to_time: to,
