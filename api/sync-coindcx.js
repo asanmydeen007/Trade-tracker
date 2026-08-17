@@ -82,17 +82,29 @@ function asList(json) {
   return [];
 }
 
-async function createNotionPage({ pair, pnl, date, name }) {
+async function createNotionPage({ pair, pnl, pnlInr, date, name }) {
   const token = process.env.NOTION_TOKEN;
   if (!token) throw new Error("NOTION_TOKEN missing");
+  const properties = {
+    Name: { title: [{ text: { content: name || pair } }] },
+    Date: { date: { start: date } },
+    "PnL USDT": { number: pnl ?? 0 },
+  };
+  // Only set Pair select if it matches a known option — unknown pairs omit select
+  const KNOWN = new Set([
+    "Bitcoin","Gold","Silver","Eth","Solana","Sui","XRP","NVDA","GOOGL","AMZN",
+    "TSLA","META","ATOM","AAVE","AVAX","NEAR","BNB","ADA","XLM","WLD","UNI",
+    "ZEC","HYPE","FARTCOIN","LIT","EWY","SPCX","WTIOIL","CRV",
+  ]);
+  if (KNOWN.has(pair)) {
+    properties.Pair = { select: { name: pair } };
+  }
+  if (pnlInr != null && !Number.isNaN(pnlInr)) {
+    properties["PnL INR"] = { number: pnlInr };
+  }
   const body = {
     parent: { database_id: NOTION_DB_ID },
-    properties: {
-      Name: { title: [{ text: { content: name || pair } }] },
-      Date: { date: { start: date } },
-      Pair: { select: { name: pair } },
-      "PnL USDT": { number: pnl },
-    },
+    properties,
   };
   const res = await fetch("https://api.notion.com/v1/pages", {
     method: "POST",
@@ -221,21 +233,66 @@ async function collectRows(month) {
   const tx = await fetchFuturesTx(15);
   meta.tx = { status: tx.status, count: tx.list.length, error: tx.error };
   if (tx.error && tx.list.length === 0) errors.push({ tx: tx.error });
+  const amountSamples = [];
   for (const t of tx.list) {
     const ts = t.created_at || t.updated_at || t.timestamp;
     if (month && !inMonth(ts, month)) continue;
     const stage = String(t.stage || "").toLowerCase();
-    if (stage === "funding") continue;
-    const pnl = parseFloat(t.amount ?? t.realised_pnl ?? t.pnl ?? 0);
+    // Keep exit / default / tpsl / liquidation; skip pure funding rows with 0 amount
+    const rawAmount = t.amount ?? t.settlement_amount ?? t.realised_pnl ?? t.pnl ?? t.profit;
+    let pnlInr = parseFloat(rawAmount);
+    if (Number.isNaN(pnlInr)) pnlInr = 0;
+    if (stage === "funding" && pnlInr === 0) continue;
+
+    // INR-margined: amount is typically in INR; convert to USDT via conversion price
+    const conv = parseFloat(
+      t.settlement_currency_conversion_price ||
+      t.price_in_usdt ||
+      0
+    );
+    // Docs: for INR futures fee is in USDT; amount is PnL in margin currency
+    const margin = String(t.margin_currency_short_name || "INR").toUpperCase();
+    let pnlUsdt = pnlInr;
+    if (margin === "INR" && conv > 1) {
+      // conversion price looks like INR per USDT (~100)
+      pnlUsdt = pnlInr / conv;
+    } else if (margin === "INR" && (!conv || conv <= 1)) {
+      // fallback ~102 INR/USDT from recent fills
+      pnlUsdt = pnlInr / 102;
+    }
+
+    if (amountSamples.length < 8) {
+      amountSamples.push({
+        pair: t.pair,
+        stage,
+        amount: t.amount,
+        settlement_amount: t.settlement_amount,
+        fee_amount: t.fee_amount,
+        margin,
+        conv,
+        pnlInr,
+        pnlUsdt,
+      });
+    }
+
     const pair = mapPair(t.pair || t.symbol || "");
-    const id = String(t.id || t.parent_id || `tx-${t.position_id}-${ts}-${pnl}`);
+    const id = String(
+      t.id || t.fill_id || t.parent_id || `tx-${t.position_id}-${ts}-${pnlInr}`
+    );
     if (seen.has(id)) continue;
     seen.add(id);
     rows.push({
-      pair, pnl, date: toDate(ts), name: pair, id,
-      source: "futures_tx", stage,
+      pair,
+      pnl: pnlUsdt,
+      pnlInr,
+      date: toDate(ts),
+      name: pair,
+      id,
+      source: "futures_tx",
+      stage,
     });
   }
+  meta.amountSamples = amountSamples;
 
   // Spot (single call, higher limit)
   const spot = await coindcxPost("/exchange/v1/orders/trade_history", {
@@ -316,7 +373,10 @@ export default async function handler(req, res) {
 
       // Prefer writing rows that have PnL; if none have PnL, write filled orders as 0? 
       // User asked realised pnl only earlier — write non-zero only, but if all zero report clearly
-      const toWrite = rows.filter((r) => r.pnl !== 0 && !Number.isNaN(r.pnl));
+      const toWrite = rows.filter((r) => {
+        const p = Number(r.pnl);
+        return !Number.isNaN(p) && Math.abs(p) > 1e-10;
+      });
       // If transactions gave nothing but we have filled orders, still try write non-zero only
 
       let created = 0;
