@@ -1,15 +1,6 @@
 /**
  * Sync realised P&L from CoinSwitch Futures → Notion Trade PnL Tracker
- *
- * Required env vars:
- *   COINSWITCH_API_KEY
- *   COINSWITCH_API_SECRET
- *   NOTION_TOKEN
- * Optional:
- *   NOTION_TRADES_DB_ID
- *
- * Uses a vendored copy of tweetnacl (lib/nacl.js) so Vercel does not
- * need to download anything from the npm registry during build.
+ * Vendored tweetnacl (lib/nacl.cjs) — no npm crypto deps.
  */
 import { createRequire } from "module";
 const require = createRequire(import.meta.url);
@@ -55,24 +46,27 @@ function signRequest(method, path, query = {}) {
     throw new Error("Missing COINSWITCH_API_KEY or COINSWITCH_API_SECRET");
   }
 
-  const qs = Object.keys(query)
+  // Build query string exactly like CoinSwitch examples (no extra encoding surprises)
+  const pairs = Object.keys(query)
     .sort()
-    .map((k) => `${k}=${encodeURIComponent(query[k])}`)
-    .join("&");
-
+    .map((k) => {
+      const v = query[k];
+      // numbers as plain decimal strings, no scientific notation
+      const val = typeof v === "number" ? String(Math.trunc(v)) : String(v);
+      return `${k}=${val}`;
+    });
+  const qs = pairs.join("&");
   const fullPath = qs ? `${path}?${qs}` : path;
-  // CoinSwitch signs the URL-decoded path
-  const decodedPath = decodeURIComponent(fullPath);
 
+  // Signed string uses the path as-is (already plain, no % encoding needed)
   const epoch = String(Date.now());
-  const message = method.toUpperCase() + decodedPath + epoch;
+  const message = method.toUpperCase() + fullPath + epoch;
   const messageBytes = new TextEncoder().encode(message);
 
-  // secret is 32-byte seed (hex). Expand to full 64-byte secretKey.
-  const seed = Uint8Array.from(Buffer.from(secretHex, "hex"));
+  const seed = Uint8Array.from(Buffer.from(secretHex.trim(), "hex"));
   if (seed.length !== 32) {
     throw new Error(
-      `COINSWITCH_API_SECRET must be 32-byte hex (got ${seed.length} bytes)`
+      `COINSWITCH_API_SECRET must be 32-byte hex (got ${seed.length} bytes). Check the key format.`
     );
   }
   const keyPair = nacl.sign.keyPair.fromSeed(seed);
@@ -81,51 +75,66 @@ function signRequest(method, path, query = {}) {
   return {
     headers: {
       "Content-Type": "application/json",
-      "X-AUTH-APIKEY": apiKey,
+      "X-AUTH-APIKEY": apiKey.trim(),
       "X-AUTH-SIGNATURE": Buffer.from(signature).toString("hex"),
       "X-AUTH-EPOCH": epoch,
     },
     url: BASE_URL + fullPath,
+    debug: {
+      method,
+      fullPath,
+      messagePreview: message.slice(0, 120) + "...",
+      epoch,
+      apiKeyPrefix: apiKey.trim().slice(0, 8) + "...",
+      secretLen: seed.length,
+    },
   };
 }
 
-async function fetchPnlTransactions(days = 30) {
+async function fetchPnlTransactions(days = 30, debug = false) {
   const to = Date.now();
   const from = to - days * 24 * 60 * 60 * 1000;
 
-  // Do NOT put type=P&L in the query string — the & breaks URL decoding
-  // used in CoinSwitch's signature verification. Filter client-side instead.
+  // Minimal required params first
   const query = {
     exchange: "EXCHANGE_2",
-    limit: 100,
-    from_time: from,
-    to_time: to,
   };
 
-  const { headers, url } = signRequest(
+  // Optional filters — only add if needed
+  if (days && days < 90) {
+    query.from_time = from;
+    query.to_time = to;
+  }
+  query.limit = 50;
+
+  const signed = signRequest(
     "GET",
     "/trade/api/v2/futures/transactions",
     query
   );
 
-  const res = await fetch(url, { headers });
+  const res = await fetch(signed.url, { headers: signed.headers });
   const text = await res.text();
   let json;
   try {
     json = JSON.parse(text);
   } catch {
     throw new Error(
-      `CoinSwitch non-JSON response (${res.status}): ${text.slice(0, 300)}`
+      `CoinSwitch non-JSON (${res.status}): ${text.slice(0, 400)} | debug=${JSON.stringify(signed.debug)}`
     );
   }
 
   if (!res.ok) {
-    throw new Error(
-      `CoinSwitch error ${res.status}: ${JSON.stringify(json).slice(0, 500)}`
+    // Include debug so we can see what was signed
+    const err = new Error(
+      `CoinSwitch ${res.status}: ${JSON.stringify(json).slice(0, 300)}`
     );
+    err.debug = signed.debug;
+    err.raw = json;
+    throw err;
   }
 
-  return Array.isArray(json.data) ? json.data : [];
+  return { data: Array.isArray(json.data) ? json.data : [], debug: signed.debug };
 }
 
 async function createNotionPage({ pair, pnl, date }) {
@@ -135,18 +144,10 @@ async function createNotionPage({ pair, pnl, date }) {
   const body = {
     parent: { database_id: NOTION_DB_ID },
     properties: {
-      Name: {
-        title: [{ text: { content: pair } }],
-      },
-      Date: {
-        date: { start: date },
-      },
-      Pair: {
-        select: { name: pair },
-      },
-      "PnL USDT": {
-        number: pnl,
-      },
+      Name: { title: [{ text: { content: pair } }] },
+      Date: { date: { start: date } },
+      Pair: { select: { name: pair } },
+      "PnL USDT": { number: pnl },
     },
   };
 
@@ -162,11 +163,8 @@ async function createNotionPage({ pair, pnl, date }) {
 
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(
-      `Notion create failed (${res.status}): ${err.slice(0, 400)}`
-    );
+    throw new Error(`Notion create failed (${res.status}): ${err.slice(0, 400)}`);
   }
-
   return res.json();
 }
 
@@ -175,13 +173,38 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  if (req.method === "OPTIONS") {
-    return res.status(204).end();
-  }
+  if (req.method === "OPTIONS") return res.status(204).end();
+
+  // Health / debug mode: ?debug=1 returns signed path without calling CoinSwitch write
+  const isDebug = req.query?.debug === "1";
 
   try {
+    // Quick env check
+    if (!process.env.COINSWITCH_API_KEY || !process.env.COINSWITCH_API_SECRET) {
+      return res.status(500).json({
+        ok: false,
+        error: "Missing COINSWITCH_API_KEY or COINSWITCH_API_SECRET in Vercel env",
+      });
+    }
+    if (!process.env.NOTION_TOKEN) {
+      return res.status(500).json({
+        ok: false,
+        error: "Missing NOTION_TOKEN in Vercel env",
+      });
+    }
+
     const days = Math.min(Number(req.query?.days) || 30, 90);
-    const transactions = await fetchPnlTransactions(days);
+    const { data: transactions, debug } = await fetchPnlTransactions(days, isDebug);
+
+    if (isDebug) {
+      return res.status(200).json({
+        ok: true,
+        mode: "debug",
+        fetched: transactions.length,
+        sample: transactions.slice(0, 3),
+        debug,
+      });
+    }
 
     const results = [];
     let created = 0;
@@ -189,7 +212,8 @@ export default async function handler(req, res) {
 
     for (const tx of transactions) {
       const type = String(tx.type || "").toUpperCase().replace(/\s+/g, "");
-      if (type !== "P&L" && type !== "PNL" && !type.includes("PNL")) {
+      // Keep only realised P&L style rows
+      if (!type.includes("PNL") && type !== "P&L") {
         skipped++;
         continue;
       }
@@ -202,8 +226,9 @@ export default async function handler(req, res) {
 
       const pair = mapPair(tx.symbol);
       let date = new Date().toISOString().slice(0, 10);
-      if (tx.timestamp || tx.created_at || tx.time) {
-        const ts = Number(tx.timestamp || tx.created_at || tx.time);
+      const rawTs = tx.timestamp || tx.created_at || tx.time;
+      if (rawTs) {
+        const ts = Number(rawTs);
         if (!Number.isNaN(ts) && ts > 1e11) {
           date = new Date(ts).toISOString().slice(0, 10);
         }
@@ -212,18 +237,9 @@ export default async function handler(req, res) {
       try {
         await createNotionPage({ pair, pnl: amount, date });
         created++;
-        results.push({
-          pair,
-          pnl: amount,
-          date,
-          transaction_id: tx.transaction_id || null,
-        });
+        results.push({ pair, pnl: amount, date, transaction_id: tx.transaction_id || null });
       } catch (e) {
-        results.push({
-          error: e.message,
-          symbol: tx.symbol,
-          amount: tx.amount,
-        });
+        results.push({ error: e.message, symbol: tx.symbol, amount: tx.amount });
       }
     }
 
@@ -241,6 +257,8 @@ export default async function handler(req, res) {
     return res.status(500).json({
       ok: false,
       error: err.message || String(err),
+      debug: err.debug || null,
+      raw: err.raw || null,
     });
   }
 }
