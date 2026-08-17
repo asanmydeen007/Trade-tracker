@@ -1,10 +1,10 @@
 /**
- * Archive duplicate Trade PnL Tracker rows.
- * Key: Name + Date + rounded PnL USDT
- * Keeps the oldest page, archives the rest.
+ * Archive duplicate Trade PnL rows.
+ * Key: Name + Pair + Date + PnL USDT (8 decimals)
+ * Keeps oldest, archives rest.
  *
- * GET /api/dedupe-notion?dry=1  → preview only
- * GET /api/dedupe-notion         → archive duplicates
+ * ?dry=1 preview
+ * ?limit=100 batch size (default 80)
  */
 const NOTION_DB_ID =
   process.env.NOTION_TRADES_DB_ID || "ec99900ead0d4744a1ecf60598e08f32";
@@ -28,7 +28,11 @@ async function notion(path, opts = {}) {
   } catch {
     throw new Error(`Notion ${res.status}: ${text.slice(0, 200)}`);
   }
-  if (!res.ok) throw new Error(`Notion ${res.status}: ${JSON.stringify(json).slice(0, 300)}`);
+  if (!res.ok) {
+    const err = new Error(`Notion ${res.status}: ${JSON.stringify(json).slice(0, 300)}`);
+    err.status = res.status;
+    throw err;
+  }
   return json;
 }
 
@@ -74,6 +78,25 @@ function dedupeKey(page) {
   return `${name}|${pair}|${date}|${pnlR}`;
 }
 
+async function archiveOne(id) {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      await notion(`/pages/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ archived: true }),
+      });
+      return { id, ok: true };
+    } catch (e) {
+      if (e.status === 429 || String(e.message).includes("rate")) {
+        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+        continue;
+      }
+      return { id, ok: false, error: e.message };
+    }
+  }
+  return { id, ok: false, error: "rate_limit" };
+}
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   if (req.method === "OPTIONS") return res.status(204).end();
@@ -90,45 +113,29 @@ export default async function handler(req, res) {
       groups.get(key).push(page);
     }
 
-    const duplicateGroups = [];
     const toArchive = [];
+    const duplicateGroups = [];
     for (const [key, list] of groups) {
       if (list.length <= 1) continue;
-      // keep first (oldest by sort), archive rest
-      const keep = list[0];
-      const extras = list.slice(1);
-      duplicateGroups.push({
-        key,
-        count: list.length,
-        keep: keep.id,
-        archive: extras.map((p) => p.id),
-      });
-      toArchive.push(...extras);
+      duplicateGroups.push({ key, count: list.length, keep: list[0].id });
+      toArchive.push(...list.slice(1));
     }
 
-    // Process in small batches to avoid Notion rate limits
-    const limit = Math.min(Number(req.query?.limit) || 25, 50);
-    const offset = Math.max(Number(req.query?.offset) || 0, 0);
-    const batch = toArchive.slice(offset, offset + limit);
+    const limit = Math.min(Number(req.query?.limit) || 80, 120);
+    const batch = toArchive.slice(0, limit);
 
     let archived = 0;
     const errors = [];
-    if (!dry) {
-      for (const page of batch) {
-        try {
-          await notion(`/pages/${page.id}`, {
-            method: "PATCH",
-            body: JSON.stringify({ archived: true }),
-          });
-          archived++;
-          await new Promise((r) => setTimeout(r, 350));
-        } catch (e) {
-          errors.push({ id: page.id, error: e.message });
-          // backoff on rate limit
-          if (String(e.message).includes("rate") || String(e.message).includes("429")) {
-            await new Promise((r) => setTimeout(r, 2000));
-          }
+    if (!dry && batch.length) {
+      // parallel chunks of 4
+      for (let i = 0; i < batch.length; i += 4) {
+        const chunk = batch.slice(i, i + 4);
+        const results = await Promise.all(chunk.map((p) => archiveOne(p.id)));
+        for (const r of results) {
+          if (r.ok) archived++;
+          else errors.push(r);
         }
+        await new Promise((r) => setTimeout(r, 150));
       }
     }
 
@@ -140,13 +147,11 @@ export default async function handler(req, res) {
       duplicateGroups: duplicateGroups.length,
       wouldArchive: toArchive.length,
       batchSize: batch.length,
-      offset,
-      limit,
-      nextOffset: offset + batch.length < toArchive.length ? offset + batch.length : null,
+      remaining: Math.max(toArchive.length - batch.length, 0),
       archived,
-      samples: duplicateGroups.slice(0, 10),
-      errors: errors.slice(0, 10),
-      tip: "If rate limited, wait 1 min then call again with ?offset=NEXT",
+      samples: duplicateGroups.slice(0, 5),
+      errors: errors.slice(0, 8),
+      done: !dry && toArchive.length <= limit,
     });
   } catch (err) {
     console.error("[dedupe-notion]", err);
