@@ -7,8 +7,13 @@
  *   NOTION_TOKEN
  * Optional:
  *   NOTION_TRADES_DB_ID
+ *
+ * Uses a vendored copy of tweetnacl (lib/nacl.js) so Vercel does not
+ * need to download anything from the npm registry during build.
  */
-import nacl from "tweetnacl";
+import { createRequire } from "module";
+const require = createRequire(import.meta.url);
+const nacl = require("../lib/nacl.js");
 
 const NOTION_DB_ID =
   process.env.NOTION_TRADES_DB_ID || "ec99900ead0d4744a1ecf60598e08f32";
