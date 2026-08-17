@@ -143,7 +143,7 @@ function toDate(ts) {
 
 
 /** Paginated futures orders for one side */
-async function fetchFuturesOrdersSide(side, maxPages = 10) {
+async function fetchFuturesOrdersSide(side, maxPages = 3) {
   const all = [];
   for (let page = 1; page <= maxPages; page++) {
     const r = await coindcxPost(
@@ -161,13 +161,13 @@ async function fetchFuturesOrdersSide(side, maxPages = 10) {
     const batch = asList(r.json);
     all.push(...batch);
     if (batch.length < 100) break;
-    await new Promise((x) => setTimeout(x, 120));
+    await new Promise((x) => setTimeout(x, 50));
   }
   return { list: all, error: null, status: 200 };
 }
 
 /** Paginated futures position transactions */
-async function fetchFuturesTx(maxPages = 10) {
+async function fetchFuturesTx(maxPages = 5) {
   const all = [];
   for (let page = 1; page <= maxPages; page++) {
     const r = await coindcxPost(
@@ -184,7 +184,7 @@ async function fetchFuturesTx(maxPages = 10) {
     const batch = asList(r.json);
     all.push(...batch);
     if (batch.length < 100) break;
-    await new Promise((x) => setTimeout(x, 120));
+    await new Promise((x) => setTimeout(x, 50));
   }
   return { list: all, error: null, status: 200 };
 }
@@ -196,7 +196,8 @@ async function collectRows(month) {
   const errors = [];
   const meta = {};
 
-  const buy = await fetchFuturesOrdersSide("buy", 15);
+  const maxPages = Math.min(Number(globalThis.__CDX_PAGES) || 3, 10);
+  const buy = await fetchFuturesOrdersSide("buy", maxPages);
   meta.buy = { status: buy.status, count: buy.list.length, error: buy.error };
   if (buy.error && buy.list.length === 0) errors.push({ buy: buy.error });
   for (const o of buy.list) {
@@ -213,7 +214,7 @@ async function collectRows(month) {
     });
   }
 
-  const sell = await fetchFuturesOrdersSide("sell", 15);
+  const sell = await fetchFuturesOrdersSide("sell", maxPages);
   meta.sell = { status: sell.status, count: sell.list.length, error: sell.error };
   if (sell.error && sell.list.length === 0) errors.push({ sell: sell.error });
   for (const o of sell.list) {
@@ -230,7 +231,7 @@ async function collectRows(month) {
     });
   }
 
-  const tx = await fetchFuturesTx(15);
+  const tx = await fetchFuturesTx(Math.min(maxPages + 2, 10));
   meta.tx = { status: tx.status, count: tx.list.length, error: tx.error };
   if (tx.error && tx.list.length === 0) errors.push({ tx: tx.error });
   const amountSamples = [];
@@ -341,6 +342,7 @@ export default async function handler(req, res) {
 
     const mode = req.query?.mode || "probe";
     const month = (req.query?.month || "").trim();
+    globalThis.__CDX_PAGES = Math.min(Number(req.query?.pages) || 3, 10);
 
     if (mode === "probe") {
       const { rows, errors, meta } = await collectRows(null);
@@ -367,9 +369,55 @@ export default async function handler(req, res) {
         });
       }
 
-      const { rows, errors, meta } = await collectRows(
-        mode === "month" ? month : null
-      );
+      // Default fast path: transactions only (has real PnL). ?full=1 includes orders too.
+      const full = req.query?.full === "1";
+      let rows, errors, meta;
+      if (!full) {
+        globalThis.__CDX_PAGES = Math.min(Number(req.query?.pages) || 5, 15);
+        // Only fetch tx — much faster and is the PnL source
+        const onlyTx = await (async () => {
+          const r = [];
+          const seen = new Set();
+          const errors = [];
+          const meta = {};
+          const tx = await fetchFuturesTx(globalThis.__CDX_PAGES);
+          meta.tx = { status: tx.status, count: tx.list.length, error: tx.error };
+          const amountSamples = [];
+          for (const t of tx.list) {
+            const ts = t.created_at || t.updated_at || t.timestamp;
+            if (mode === "month" && month && !inMonth(ts, month)) continue;
+            const stage = String(t.stage || "").toLowerCase();
+            const rawAmount = t.amount ?? t.settlement_amount ?? t.realised_pnl ?? t.pnl ?? 0;
+            let pnlInr = parseFloat(rawAmount);
+            if (Number.isNaN(pnlInr)) pnlInr = 0;
+            if (stage === "funding" && pnlInr === 0) continue;
+            const conv = parseFloat(t.settlement_currency_conversion_price || 0);
+            const margin = String(t.margin_currency_short_name || "INR").toUpperCase();
+            let pnlUsdt = pnlInr;
+            if (margin === "INR") pnlUsdt = pnlInr / (conv > 1 ? conv : 102);
+            if (amountSamples.length < 10) {
+              amountSamples.push({ pair: t.pair, stage, amount: t.amount, settlement_amount: t.settlement_amount, pnlInr, pnlUsdt, margin });
+            }
+            const pair = mapPair(t.pair || t.symbol || "");
+            const id = String(t.id || t.fill_id || t.parent_id || `tx-${t.position_id}-${ts}-${pnlInr}`);
+            if (seen.has(id)) continue;
+            seen.add(id);
+            r.push({ pair, pnl: pnlUsdt, pnlInr, date: toDate(ts), name: pair, id, source: "futures_tx", stage });
+          }
+          meta.amountSamples = amountSamples;
+          const dates = r.map((x) => x.date).filter(Boolean).sort();
+          meta.dateRange = dates.length ? { from: dates[0], to: dates[dates.length - 1] } : null;
+          return { rows: r, errors, meta };
+        })();
+        rows = onlyTx.rows;
+        errors = onlyTx.errors;
+        meta = onlyTx.meta;
+      } else {
+        const collected = await collectRows(mode === "month" ? month : null);
+        rows = collected.rows;
+        errors = collected.errors;
+        meta = collected.meta;
+      }
 
       // Prefer writing rows that have PnL; if none have PnL, write filled orders as 0? 
       // User asked realised pnl only earlier — write non-zero only, but if all zero report clearly
