@@ -1,114 +1,136 @@
 /**
- * CoinSwitch Futures → Notion
+ * CoinSwitch Spot + Futures history → Notion
  *
- * ?mode=probe&month=2026-01  → raw diagnostic for that month
- * ?mode=month&month=2026-01  → sync that month to Notion
- * ?mode=closed|transactions|balance
+ * Env (either name works for secret):
+ *   COINSWITCH_API_KEY
+ *   COINSWITCH_API_SECRET  or  COINSWITCH_SECRET_KEY
+ *   NOTION_TOKEN
+ *
+ * ?mode=probe&month=2026-01&date=2026-01-30
+ * ?mode=month&month=2026-01
+ * ?mode=spot&month=2026-01
  */
-import { createRequire } from "module";
-const require = createRequire(import.meta.url);
-const nacl = require("../lib/nacl.cjs");
+import crypto from "crypto";
 
 const NOTION_DB_ID =
   process.env.NOTION_TRADES_DB_ID || "ec99900ead0d4744a1ecf60598e08f32";
 const BASE_URL = "https://coinswitch.co";
 
 const SYMBOL_TO_PAIR = {
-  BTCUSDT: "Bitcoin", ETHUSDT: "Eth", SOLUSDT: "Solana", SUIUSDT: "Sui",
-  XRPUSDT: "XRP", ADAUSDT: "ADA", AVAXUSDT: "AVAX", BNBUSDT: "BNB",
-  DOGEUSDT: "DOGE", LINKUSDT: "LINK", MATICUSDT: "MATIC", NEARUSDT: "NEAR",
-  ATOMUSDT: "ATOM", AAVEUSDT: "AAVE", DOTUSDT: "DOT", LTCUSDT: "LTC",
-  UNIUSDT: "UNI", APTUSDT: "APT", ARBUSDT: "ARB", OPUSDT: "OP",
+  BTCUSDT: "Bitcoin", "BTC/USDT": "Bitcoin", BTCINR: "Bitcoin",
+  ETHUSDT: "Eth", "ETH/USDT": "Eth", ETHINR: "Eth",
+  SOLUSDT: "Solana", "SOL/USDT": "Solana",
+  SUIUSDT: "Sui", XRPUSDT: "XRP", ADAUSDT: "ADA",
+  AVAXUSDT: "AVAX", BNBUSDT: "BNB", DOGEUSDT: "DOGE",
 };
 
 function mapPair(symbol = "") {
-  const s = String(symbol).toUpperCase().replace("/", "");
-  return SYMBOL_TO_PAIR[s] || s.replace("USDT", "") || "Other";
+  const s = String(symbol).toUpperCase();
+  if (SYMBOL_TO_PAIR[s]) return SYMBOL_TO_PAIR[s];
+  const base = s.replace("/", "").replace("USDT", "").replace("INR", "");
+  return base || "Other";
 }
 
-function signRequest(method, path, query = {}, bodyObj = null) {
+function getSecret() {
+  return (
+    process.env.COINSWITCH_API_SECRET ||
+    process.env.COINSWITCH_SECRET_KEY ||
+    ""
+  );
+}
+
+/** Ed25519 via Node crypto (PKCS8-wrapped 32-byte seed) */
+function loadEd25519PrivateKey(secretHex) {
+  const rawSeed = Buffer.from(secretHex.trim(), "hex");
+  if (rawSeed.length !== 32) {
+    throw new Error(
+      `Secret must be 32-byte hex (got ${rawSeed.length} bytes)`
+    );
+  }
+  const pkcs8Prefix = Buffer.from("302e020100300506032b657004220420", "hex");
+  const der = Buffer.concat([pkcs8Prefix, rawSeed]);
+  return crypto.createPrivateKey({ key: der, format: "der", type: "pkcs8" });
+}
+
+function signRequest(method, path, params = {}) {
   const apiKey = process.env.COINSWITCH_API_KEY;
-  const secretHex = process.env.COINSWITCH_API_SECRET;
-  if (!apiKey || !secretHex) throw new Error("Missing CoinSwitch keys");
+  const secretHex = getSecret();
+  if (!apiKey || !secretHex) throw new Error("Missing CoinSwitch API key/secret");
 
-  const pairs = Object.keys(query).sort().map((k) => `${k}=${query[k]}`);
-  const qs = pairs.join("&");
-  const fullPath = qs ? `${path}?${qs}` : path;
-  const epoch = String(Date.now());
-  // Body is NOT part of signature when epoch is sent
-  const message = method.toUpperCase() + fullPath + epoch;
-  const messageBytes = new TextEncoder().encode(message);
+  const url = new URL(path, BASE_URL);
+  Object.entries(params).forEach(([k, v]) => {
+    if (v !== undefined && v !== null) url.searchParams.append(k, String(v));
+  });
 
-  const seed = Uint8Array.from(Buffer.from(secretHex.trim(), "hex"));
-  const secretKey =
-    seed.length === 32
-      ? nacl.sign.keyPair.fromSeed(seed).secretKey
-      : seed.length === 64
-        ? seed
-        : null;
-  if (!secretKey) throw new Error(`Bad secret length ${seed.length}`);
+  // CoinSwitch signs URL-DECODED path + query
+  const decodedPath = decodeURIComponent(url.pathname + url.search);
+  const epoch = Date.now().toString();
+  const message = method.toUpperCase() + decodedPath + epoch;
 
-  const signature = nacl.sign.detached(messageBytes, secretKey);
+  const privateKey = loadEd25519PrivateKey(secretHex);
+  const signature = crypto
+    .sign(null, Buffer.from(message, "utf8"), privateKey)
+    .toString("hex");
+
   return {
     headers: {
       "Content-Type": "application/json",
       "X-AUTH-APIKEY": apiKey.trim(),
-      "X-AUTH-SIGNATURE": Buffer.from(signature).toString("hex"),
+      "X-AUTH-SIGNATURE": signature,
       "X-AUTH-EPOCH": epoch,
     },
-    url: BASE_URL + fullPath,
-    body: bodyObj ? JSON.stringify(bodyObj) : undefined,
-    debug: { method, fullPath, epoch, body: bodyObj },
+    path: decodedPath,
+    url: BASE_URL + decodedPath,
+    debug: { method, decodedPath, epoch },
   };
 }
 
-async function csFetch(method, path, query = {}, bodyObj = null) {
-  const signed = signRequest(method, path, query, bodyObj);
-  const opts = { method, headers: signed.headers };
-  if (bodyObj && method !== "GET") opts.body = signed.body;
-  const res = await fetch(signed.url, opts);
+async function csGet(path, params = {}) {
+  const signed = signRequest("GET", path, params);
+  const res = await fetch(signed.url, { method: "GET", headers: signed.headers });
   const text = await res.text();
   let json;
   try {
     json = JSON.parse(text);
   } catch {
-    const e = new Error(`Non-JSON ${res.status}: ${text.slice(0, 300)}`);
-    e.debug = signed.debug;
-    throw e;
+    return { ok: false, status: res.status, json: null, text: text.slice(0, 400), debug: signed.debug };
   }
-  return {
-    ok: res.ok,
-    status: res.status,
-    json,
-    debug: signed.debug,
-    text: text.slice(0, 500),
-  };
+  return { ok: res.ok, status: res.status, json, debug: signed.debug };
+}
+
+async function csPost(path, body = {}) {
+  // POST: sign path WITHOUT body (epoch present)
+  const signed = signRequest("POST", path, {});
+  const res = await fetch(BASE_URL + path, {
+    method: "POST",
+    headers: signed.headers,
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    return { ok: false, status: res.status, json: null, text: text.slice(0, 400), debug: signed.debug };
+  }
+  return { ok: res.ok, status: res.status, json, debug: signed.debug };
 }
 
 function monthBounds(yyyyMm) {
   const [y, m] = yyyyMm.split("-").map(Number);
-  const from = Date.UTC(y, m - 1, 1, 0, 0, 0, 0);
-  const to = Date.UTC(y, m, 0, 23, 59, 59, 999);
-  return { from, to };
+  return {
+    from: Date.UTC(y, m - 1, 1, 0, 0, 0, 0),
+    to: Date.UTC(y, m, 0, 23, 59, 59, 999),
+  };
 }
 
-/** Split month into 7-day windows */
-function windowsForMonth(yyyyMm) {
-  const { from, to } = monthBounds(yyyyMm);
-  const wins = [];
-  for (let t = from; t <= to; t += 7 * 24 * 60 * 60 * 1000) {
-    wins.push({ from: t, to: Math.min(t + 7 * 24 * 60 * 60 * 1000 - 1, to) });
-  }
-  return wins;
-}
-
-async function createNotionPage({ pair, pnl, date }) {
+async function createNotionPage({ pair, pnl, date, name }) {
   const token = process.env.NOTION_TOKEN;
   if (!token) throw new Error("NOTION_TOKEN missing");
   const body = {
     parent: { database_id: NOTION_DB_ID },
     properties: {
-      Name: { title: [{ text: { content: pair } }] },
+      Name: { title: [{ text: { content: name || pair } }] },
       Date: { date: { start: date } },
       Pair: { select: { name: pair } },
       "PnL USDT": { number: pnl },
@@ -127,162 +149,132 @@ async function createNotionPage({ pair, pnl, date }) {
   return res.json();
 }
 
+/** Spot orders with pagination */
+async function fetchSpotOrders(fromMs, toMs) {
+  const all = [];
+  let cursor = null;
+  let pages = 0;
+  do {
+    const params = {
+      from_time: fromMs,
+      to_time: toMs,
+      count: 100,
+    };
+    if (cursor) params.cursor = cursor;
+
+    const r = await csGet("/trade/api/v2/orders", params);
+    if (!r.ok) {
+      return { orders: all, error: r.json || r.text, status: r.status, debug: r.debug };
+    }
+    const orders = r.json?.data?.orders ?? r.json?.data ?? [];
+    if (Array.isArray(orders)) all.push(...orders);
+    cursor = r.json?.data?.cursor ?? null;
+    pages++;
+    if (pages > 50) break;
+    if (cursor) await new Promise((x) => setTimeout(x, 150));
+  } while (cursor);
+
+  return { orders: all, error: null };
+}
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   if (req.method === "OPTIONS") return res.status(204).end();
 
   try {
-    if (!process.env.COINSWITCH_API_KEY || !process.env.COINSWITCH_API_SECRET) {
-      return res.status(500).json({ ok: false, error: "Missing CoinSwitch keys" });
+    if (!process.env.COINSWITCH_API_KEY || !getSecret()) {
+      return res.status(500).json({
+        ok: false,
+        error: "Missing COINSWITCH_API_KEY or COINSWITCH_API_SECRET / COINSWITCH_SECRET_KEY",
+      });
     }
 
     const mode = req.query?.mode || "probe";
     const month = (req.query?.month || "2026-01").trim();
+    const dateStr = (req.query?.date || "").trim();
 
-    // -------- PROBE: try every combination and return raw results --------
+    // -------- PROBE --------
     if (mode === "probe") {
       const { from, to } = monthBounds(month);
-      const results = {};
+      const summary = {};
+      const raw = {};
 
-      // Optional: ?date=2026-01-30 → probe the 7-day window containing that day
-      const dateStr = (req.query?.date || "").trim();
-      let dayWindow = null;
+      // Spot: full month (may work — Spot often allows longer ranges)
+      const spotMonth = await csGet("/trade/api/v2/orders", {
+        from_time: from,
+        to_time: to,
+        count: 50,
+      });
+      summary.spot_month = {
+        status: spotMonth.status,
+        ok: spotMonth.ok,
+        count: (spotMonth.json?.data?.orders ?? spotMonth.json?.data ?? [])?.length || 0,
+        message: spotMonth.json?.message || null,
+      };
+      raw.spot_month = spotMonth.json;
+
+      // Spot: 7 days ending on date if provided
       if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
         const [yy, mm, dd] = dateStr.split("-").map(Number);
-        const dayStart = Date.UTC(yy, mm - 1, dd, 0, 0, 0, 0);
         const dayEnd = Date.UTC(yy, mm - 1, dd, 23, 59, 59, 999);
-        // 7-day window ending on that day
-        dayWindow = {
-          from: dayStart - 6 * 24 * 60 * 60 * 1000,
-          to: dayEnd,
-          date: dateStr,
+        const dayFrom = dayEnd - 6 * 24 * 60 * 60 * 1000;
+        const spotDay = await csGet("/trade/api/v2/orders", {
+          from_time: dayFrom,
+          to_time: dayEnd,
+          count: 50,
+        });
+        summary.spot_on_date = {
+          status: spotDay.status,
+          ok: spotDay.ok,
+          count: (spotDay.json?.data?.orders ?? spotDay.json?.data ?? [])?.length || 0,
+          message: spotDay.json?.message || null,
         };
+        raw.spot_on_date = spotDay.json;
       }
 
-      // A) closed orders — no time filter (last 7 days only)
-      results.closed_no_time = await csFetch(
-        "POST",
-        "/trade/api/v2/futures/orders/closed",
-        {},
-        { exchange: "EXCHANGE_2", limit: 50 }
-      );
+      // Spot: list without time (recent)
+      const spotRecent = await csGet("/trade/api/v2/orders", { count: 20 });
+      summary.spot_recent = {
+        status: spotRecent.status,
+        ok: spotRecent.ok,
+        count: (spotRecent.json?.data?.orders ?? spotRecent.json?.data ?? [])?.length || 0,
+        message: spotRecent.json?.message || null,
+      };
+      raw.spot_recent = spotRecent.json;
 
-      // B) closed orders — with from_time/to_time in body for full month
-      results.closed_with_time = await csFetch(
-        "POST",
-        "/trade/api/v2/futures/orders/closed",
-        {},
-        {
+      // Futures closed 7d around date (for comparison)
+      if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+        const [yy, mm, dd] = dateStr.split("-").map(Number);
+        const dayEnd = Date.UTC(yy, mm - 1, dd, 23, 59, 59, 999);
+        const dayFrom = dayEnd - 6 * 24 * 60 * 60 * 1000;
+        const fut = await csPost("/trade/api/v2/futures/orders/closed", {
           exchange: "EXCHANGE_2",
           limit: 50,
-          from_time: from,
-          to_time: to,
-        }
-      );
-
-      // C) closed — first 7-day window of the month only
-      const firstWin = windowsForMonth(month)[0];
-      results.closed_7day = await csFetch(
-        "POST",
-        "/trade/api/v2/futures/orders/closed",
-        {},
-        {
-          exchange: "EXCHANGE_2",
-          limit: 50,
-          from_time: firstWin.from,
-          to_time: firstWin.to,
-        }
-      );
-
-      if (dayWindow) {
-        results.closed_on_date = await csFetch(
-          "POST",
-          "/trade/api/v2/futures/orders/closed",
-          {},
-          {
-            exchange: "EXCHANGE_2",
-            limit: 50,
-            from_time: dayWindow.from,
-            to_time: dayWindow.to,
-          }
-        );
-        results.tx_on_date = await csFetch(
-          "GET",
-          "/trade/api/v2/futures/transactions",
-          {
-            exchange: "EXCHANGE_2",
-            from_time: dayWindow.from,
-            to_time: dayWindow.to,
-            limit: 100,
-          }
-        );
-      }
-
-      // D) transactions no time
-      results.tx_no_time = await csFetch(
-        "GET",
-        "/trade/api/v2/futures/transactions",
-        { exchange: "EXCHANGE_2" }
-      );
-
-      // E) transactions with time (query)
-      results.tx_with_time = await csFetch(
-        "GET",
-        "/trade/api/v2/futures/transactions",
-        {
-          exchange: "EXCHANGE_2",
-          from_time: firstWin.from,
-          to_time: firstWin.to,
-          limit: 50,
-        }
-      );
-
-      // F) open orders (sanity)
-      results.open = await csFetch(
-        "POST",
-        "/trade/api/v2/futures/orders/open",
-        {},
-        { exchange: "EXCHANGE_2", limit: 20 }
-      );
-
-      // G) positions
-      results.positions = await csFetch(
-        "GET",
-        "/trade/api/v2/futures/positions",
-        { exchange: "EXCHANGE_2" }
-      );
-
-      // Summarize counts
-      const summary = {};
-      for (const [k, v] of Object.entries(results)) {
-        const d = v.json?.data;
-        let count = 0;
-        if (Array.isArray(d)) count = d.length;
-        else if (d?.orders) count = d.orders.length;
-        else if (d && typeof d === "object") count = Object.keys(d).length;
-        summary[k] = { status: v.status, ok: v.ok, count, message: v.json?.message || null };
+          from_time: dayFrom,
+          to_time: dayEnd,
+        });
+        summary.futures_on_date = {
+          status: fut.status,
+          ok: fut.ok,
+          count: (fut.json?.data?.orders ?? [])?.length || 0,
+          message: fut.json?.message || null,
+        };
+        raw.futures_on_date = fut.json;
       }
 
       return res.status(200).json({
         ok: true,
         mode: "probe",
         month,
-        monthMs: { from, to },
-        dayWindow,
+        date: dateStr || null,
         summary,
-        // full raw for the most useful ones (truncated)
-        closed_with_time: results.closed_with_time.json,
-        closed_7day: results.closed_7day.json,
-        tx_with_time: results.tx_with_time.json,
-        closed_no_time: results.closed_no_time.json,
-        closed_on_date: results.closed_on_date?.json || null,
-        tx_on_date: results.tx_on_date?.json || null,
+        raw,
       });
     }
 
-    // -------- MONTH SYNC --------
-    if (mode === "month") {
+    // -------- SPOT / MONTH SYNC → Notion --------
+    if (mode === "month" || mode === "spot") {
       if (!process.env.NOTION_TOKEN) {
         return res.status(500).json({ ok: false, error: "Missing NOTION_TOKEN" });
       }
@@ -290,114 +282,97 @@ export default async function handler(req, res) {
         return res.status(400).json({ ok: false, error: "month=YYYY-MM required" });
       }
 
-      const wins = windowsForMonth(month);
-      const all = [];
-      const seen = new Set();
-      const errors = [];
+      const { from, to } = monthBounds(month);
+      const { orders, error, status, debug } = await fetchSpotOrders(from, to);
 
-      for (const w of wins) {
-        // Closed orders
-        const closed = await csFetch(
-          "POST",
-          "/trade/api/v2/futures/orders/closed",
-          {},
-          {
-            exchange: "EXCHANGE_2",
-            limit: 50,
-            from_time: w.from,
-            to_time: w.to,
-          }
-        );
-        if (!closed.ok) {
-          errors.push({ window: w, closed: closed.json });
-        } else {
-          const orders = closed.json?.data?.orders || closed.json?.data || [];
-          for (const o of orders) {
-            const pnl = parseFloat(o.realised_pnl || o.realized_pnl || 0);
-            if (!pnl) continue;
-            const id = o.order_id || `o-${o.symbol}-${o.updated_at}`;
-            if (seen.has(id)) continue;
-            seen.add(id);
-            const ts = Number(o.updated_at || o.created_at || w.to);
-            all.push({
-              pair: mapPair(o.symbol),
-              pnl,
-              date: new Date(ts > 1e11 ? ts : w.to).toISOString().slice(0, 10),
-              source: "order",
-              id,
-            });
-          }
-        }
-
-        // Transactions
-        const tx = await csFetch(
-          "GET",
-          "/trade/api/v2/futures/transactions",
-          {
-            exchange: "EXCHANGE_2",
-            from_time: w.from,
-            to_time: w.to,
-            limit: 100,
-          }
-        );
-        if (tx.ok) {
-          for (const t of tx.json?.data || []) {
-            const typ = String(t.type || "").toUpperCase().replace(/\s+/g, "");
-            if (!typ.includes("PNL")) continue;
-            const pnl = parseFloat(t.amount);
-            if (!pnl) continue;
-            const id = t.transaction_id || `t-${t.symbol}-${t.amount}`;
-            if (seen.has(id)) continue;
-            seen.add(id);
-            const ts = Number(t.timestamp || t.created_at || w.to);
-            all.push({
-              pair: mapPair(t.symbol),
-              pnl,
-              date: new Date(ts > 1e11 ? ts : w.to).toISOString().slice(0, 10),
-              source: "tx",
-              id,
-            });
-          }
-        } else {
-          errors.push({ window: w, tx: tx.json });
-        }
-
-        await new Promise((r) => setTimeout(r, 150));
+      if (error && orders.length === 0) {
+        return res.status(200).json({
+          ok: false,
+          mode,
+          month,
+          error,
+          status,
+          debug,
+          hint: "Spot /trade/api/v2/orders returned no data. Check API key permissions and that history is Spot.",
+        });
       }
 
+      // Map orders → PnL rows (best-effort)
+      // Spot orders may not have realised_pnl; use filled value heuristics
+      const rows = [];
+      const seen = new Set();
+      for (const o of orders) {
+        const id = o.order_id || o.id || JSON.stringify(o).slice(0, 80);
+        if (seen.has(id)) continue;
+        seen.add(id);
+
+        // Prefer explicit pnl fields
+        let pnl = parseFloat(
+          o.realised_pnl ?? o.realized_pnl ?? o.pnl ?? o.profit ?? NaN
+        );
+
+        // If no pnl, skip pure open orders; for filled, try quote delta
+        if (Number.isNaN(pnl)) {
+          const side = String(o.side || "").toLowerCase();
+          const avg = parseFloat(o.avg_execution_price || o.average_price || o.price || 0);
+          const qty = parseFloat(o.exec_quantity || o.filled_quantity || o.quantity || 0);
+          // Without cost basis we cannot invent PnL — store 0 and still log the trade name
+          if (!qty) continue;
+          pnl = 0; // structural log only
+        }
+
+        const ts = Number(o.updated_at || o.created_at || o.timestamp || to);
+        const date = new Date(ts > 1e11 ? ts : to).toISOString().slice(0, 10);
+        const pair = mapPair(o.symbol || o.market || o.pair || "");
+        rows.push({
+          pair,
+          pnl,
+          date,
+          name: pair,
+          id,
+          side: o.side,
+          status: o.status,
+        });
+      }
+
+      // Only write rows with non-zero pnl to Notion (realised)
       let created = 0;
       const results = [];
-      for (const row of all) {
+      for (const row of rows) {
+        if (!row.pnl) {
+          results.push({ skipped: true, reason: "no_pnl", pair: row.pair, date: row.date });
+          continue;
+        }
         try {
           await createNotionPage(row);
           created++;
-          results.push(row);
+          results.push({ pair: row.pair, pnl: row.pnl, date: row.date });
         } catch (e) {
-          results.push({ error: e.message, ...row });
+          results.push({ error: e.message, pair: row.pair });
         }
       }
 
       return res.status(200).json({
         ok: true,
-        mode: "month",
+        mode,
         month,
-        windows: wins.length,
-        uniquePnl: all.length,
+        ordersFetched: orders.length,
+        withPnl: rows.filter((r) => r.pnl).length,
         created,
-        results,
-        errors: errors.slice(0, 5),
+        results: results.slice(0, 40),
+        sampleOrder: orders[0] || null,
       });
     }
 
     return res.status(400).json({
       ok: false,
-      error: "Use mode=probe|month|closed|transactions|balance",
+      error: "Use mode=probe|month|spot",
     });
   } catch (err) {
+    console.error("[sync-coinswitch]", err);
     return res.status(500).json({
       ok: false,
       error: err.message || String(err),
-      debug: err.debug || null,
     });
   }
 }
