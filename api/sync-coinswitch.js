@@ -1,6 +1,6 @@
 /**
  * Sync realised P&L from CoinSwitch Futures → Notion Trade PnL Tracker
- * Vendored tweetnacl (lib/nacl.cjs) — no npm crypto deps.
+ * Vendored tweetnacl (lib/nacl.cjs)
  */
 import { createRequire } from "module";
 const require = createRequire(import.meta.url);
@@ -38,7 +38,7 @@ function mapPair(symbol = "") {
   return SYMBOL_TO_PAIR[s] || s.replace("USDT", "") || "Other";
 }
 
-function signRequest(method, path, query = {}) {
+function signRequest(method, path, query = {}, bodyObj = null) {
   const apiKey = process.env.COINSWITCH_API_KEY;
   const secretHex = process.env.COINSWITCH_API_SECRET;
 
@@ -46,93 +46,77 @@ function signRequest(method, path, query = {}) {
     throw new Error("Missing COINSWITCH_API_KEY or COINSWITCH_API_SECRET");
   }
 
-  // Build query string exactly like CoinSwitch examples (no extra encoding surprises)
   const pairs = Object.keys(query)
     .sort()
-    .map((k) => {
-      const v = query[k];
-      // numbers as plain decimal strings, no scientific notation
-      const val = typeof v === "number" ? String(Math.trunc(v)) : String(v);
-      return `${k}=${val}`;
-    });
+    .map((k) => `${k}=${query[k]}`);
   const qs = pairs.join("&");
   const fullPath = qs ? `${path}?${qs}` : path;
 
-  // Signed string uses the path as-is (already plain, no % encoding needed)
   const epoch = String(Date.now());
+  // CoinSwitch: METHOD + path_with_query + epoch  (body NOT included when epoch is used)
   const message = method.toUpperCase() + fullPath + epoch;
   const messageBytes = new TextEncoder().encode(message);
 
   const seed = Uint8Array.from(Buffer.from(secretHex.trim(), "hex"));
-  if (seed.length !== 32) {
+  if (seed.length !== 32 && seed.length !== 64) {
     throw new Error(
-      `COINSWITCH_API_SECRET must be 32-byte hex (got ${seed.length} bytes). Check the key format.`
+      `COINSWITCH_API_SECRET unexpected length ${seed.length} bytes (want 32 seed or 64 expanded)`
     );
   }
-  const keyPair = nacl.sign.keyPair.fromSeed(seed);
-  const signature = nacl.sign.detached(messageBytes, keyPair.secretKey);
+
+  let secretKey;
+  if (seed.length === 32) {
+    secretKey = nacl.sign.keyPair.fromSeed(seed).secretKey;
+  } else {
+    secretKey = seed; // already 64-byte secret key
+  }
+  const signature = nacl.sign.detached(messageBytes, secretKey);
+
+  const headers = {
+    "Content-Type": "application/json",
+    "X-AUTH-APIKEY": apiKey.trim(),
+    "X-AUTH-SIGNATURE": Buffer.from(signature).toString("hex"),
+    "X-AUTH-EPOCH": epoch,
+  };
 
   return {
-    headers: {
-      "Content-Type": "application/json",
-      "X-AUTH-APIKEY": apiKey.trim(),
-      "X-AUTH-SIGNATURE": Buffer.from(signature).toString("hex"),
-      "X-AUTH-EPOCH": epoch,
-    },
+    headers,
     url: BASE_URL + fullPath,
+    body: bodyObj ? JSON.stringify(bodyObj) : undefined,
     debug: {
       method,
       fullPath,
-      messagePreview: message.slice(0, 120) + "...",
+      message: message.slice(0, 160),
       epoch,
-      apiKeyPrefix: apiKey.trim().slice(0, 8) + "...",
-      secretLen: seed.length,
+      apiKeyPrefix: apiKey.trim().slice(0, 10) + "...",
+      secretBytes: seed.length,
     },
   };
 }
 
-async function fetchPnlTransactions(days = 7, debug = false) {
-  const to = Date.now();
-  const from = to - days * 24 * 60 * 60 * 1000;
-
-  // Minimal required params first
-  const query = {
-    exchange: "EXCHANGE_2",
-  };
-
-  // Optional filters — only add if needed
-  query.from_time = from;
-  query.to_time = to;
-  query.limit = 50;
-
-  const signed = signRequest(
-    "GET",
-    "/trade/api/v2/futures/transactions",
-    query
-  );
-
-  const res = await fetch(signed.url, { headers: signed.headers });
+async function coinswitchFetch(method, path, query = {}, bodyObj = null) {
+  const signed = signRequest(method, path, query, bodyObj);
+  const opts = { method, headers: signed.headers };
+  if (bodyObj && method !== "GET") {
+    opts.body = signed.body;
+  }
+  const res = await fetch(signed.url, opts);
   const text = await res.text();
   let json;
   try {
     json = JSON.parse(text);
   } catch {
-    throw new Error(
-      `CoinSwitch non-JSON (${res.status}): ${text.slice(0, 400)} | debug=${JSON.stringify(signed.debug)}`
-    );
+    const err = new Error(`Non-JSON ${res.status}: ${text.slice(0, 300)}`);
+    err.debug = signed.debug;
+    throw err;
   }
-
   if (!res.ok) {
-    // Include debug so we can see what was signed
-    const err = new Error(
-      `CoinSwitch ${res.status}: ${JSON.stringify(json).slice(0, 300)}`
-    );
+    const err = new Error(`CoinSwitch ${res.status}: ${JSON.stringify(json).slice(0, 400)}`);
     err.debug = signed.debug;
     err.raw = json;
     throw err;
   }
-
-  return { data: Array.isArray(json.data) ? json.data : [], debug: signed.debug };
+  return { json, debug: signed.debug };
 }
 
 async function createNotionPage({ pair, pnl, date }) {
@@ -158,10 +142,8 @@ async function createNotionPage({ pair, pnl, date }) {
     },
     body: JSON.stringify(body),
   });
-
   if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Notion create failed (${res.status}): ${err.slice(0, 400)}`);
+    throw new Error(`Notion ${(await res.text()).slice(0, 300)}`);
   }
   return res.json();
 }
@@ -169,87 +151,110 @@ async function createNotionPage({ pair, pnl, date }) {
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-
   if (req.method === "OPTIONS") return res.status(204).end();
 
-  // Health / debug mode: ?debug=1 returns signed path without calling CoinSwitch write
-  const isDebug = req.query?.debug === "1";
-
   try {
-    // Quick env check
     if (!process.env.COINSWITCH_API_KEY || !process.env.COINSWITCH_API_SECRET) {
-      return res.status(500).json({
-        ok: false,
-        error: "Missing COINSWITCH_API_KEY or COINSWITCH_API_SECRET in Vercel env",
-      });
+      return res.status(500).json({ ok: false, error: "Missing CoinSwitch env keys" });
     }
     if (!process.env.NOTION_TOKEN) {
-      return res.status(500).json({
-        ok: false,
-        error: "Missing NOTION_TOKEN in Vercel env",
-      });
+      return res.status(500).json({ ok: false, error: "Missing NOTION_TOKEN" });
     }
 
-    // CoinSwitch rejects windows longer than ~7 days with "Malformed request data"
-    const days = Math.min(Number(req.query?.days) || 7, 7);
-    const { data: transactions, debug } = await fetchPnlTransactions(days, isDebug);
+    const mode = req.query?.mode || "transactions";
 
-    if (isDebug) {
+    // Mode 1: minimal transactions (only exchange)
+    if (mode === "transactions") {
+      const { json, debug } = await coinswitchFetch(
+        "GET",
+        "/trade/api/v2/futures/transactions",
+        { exchange: "EXCHANGE_2" }
+      );
+      const list = Array.isArray(json.data) ? json.data : [];
       return res.status(200).json({
         ok: true,
-        mode: "debug",
-        fetched: transactions.length,
-        sample: transactions.slice(0, 3),
+        mode: "transactions",
+        fetched: list.length,
+        sample: list.slice(0, 5),
         debug,
       });
     }
 
-    const results = [];
-    let created = 0;
-    let skipped = 0;
+    // Mode 2: closed orders (POST body)
+    if (mode === "closed") {
+      const body = { exchange: "EXCHANGE_2", limit: 50 };
+      const { json, debug } = await coinswitchFetch(
+        "POST",
+        "/trade/api/v2/futures/orders/closed",
+        {},
+        body
+      );
+      const orders = json?.data?.orders || json?.data || [];
+      return res.status(200).json({
+        ok: true,
+        mode: "closed",
+        fetched: Array.isArray(orders) ? orders.length : 0,
+        sample: Array.isArray(orders) ? orders.slice(0, 3) : orders,
+        debug,
+      });
+    }
 
-    for (const tx of transactions) {
-      const type = String(tx.type || "").toUpperCase().replace(/\s+/g, "");
-      // Keep only realised P&L style rows
-      if (!type.includes("PNL") && type !== "P&L") {
-        skipped++;
-        continue;
-      }
+    // Mode 3: wallet balance (simple GET)
+    if (mode === "balance") {
+      const { json, debug } = await coinswitchFetch(
+        "GET",
+        "/trade/api/v2/futures/wallet_balance",
+        { exchange: "EXCHANGE_2" }
+      );
+      return res.status(200).json({ ok: true, mode: "balance", data: json, debug });
+    }
 
-      const amount = parseFloat(tx.amount);
-      if (Number.isNaN(amount) || amount === 0) {
-        skipped++;
-        continue;
-      }
+    // Mode 4: full sync — closed orders with realised_pnl → Notion
+    if (mode === "sync") {
+      const body = { exchange: "EXCHANGE_2", limit: 50 };
+      const { json, debug } = await coinswitchFetch(
+        "POST",
+        "/trade/api/v2/futures/orders/closed",
+        {},
+        body
+      );
+      const orders = json?.data?.orders || [];
+      const results = [];
+      let created = 0;
+      let skipped = 0;
 
-      const pair = mapPair(tx.symbol);
-      let date = new Date().toISOString().slice(0, 10);
-      const rawTs = tx.timestamp || tx.created_at || tx.time;
-      if (rawTs) {
-        const ts = Number(rawTs);
-        if (!Number.isNaN(ts) && ts > 1e11) {
-          date = new Date(ts).toISOString().slice(0, 10);
+      for (const o of orders) {
+        const pnl = parseFloat(o.realised_pnl || o.realized_pnl || 0);
+        if (!pnl || pnl === 0) {
+          skipped++;
+          continue;
+        }
+        const pair = mapPair(o.symbol);
+        const ts = Number(o.updated_at || o.created_at || Date.now());
+        const date = new Date(ts > 1e11 ? ts : Date.now()).toISOString().slice(0, 10);
+        try {
+          await createNotionPage({ pair, pnl, date });
+          created++;
+          results.push({ pair, pnl, date, order_id: o.order_id });
+        } catch (e) {
+          results.push({ error: e.message, symbol: o.symbol });
         }
       }
 
-      try {
-        await createNotionPage({ pair, pnl: amount, date });
-        created++;
-        results.push({ pair, pnl: amount, date, transaction_id: tx.transaction_id || null });
-      } catch (e) {
-        results.push({ error: e.message, symbol: tx.symbol, amount: tx.amount });
-      }
+      return res.status(200).json({
+        ok: true,
+        mode: "sync",
+        fetched: orders.length,
+        created,
+        skipped,
+        results,
+        debug,
+      });
     }
 
-    return res.status(200).json({
-      ok: true,
-      source: "coinswitch",
-      fetched: transactions.length,
-      created,
-      skipped,
-      results,
-      syncedAt: new Date().toISOString(),
+    return res.status(400).json({
+      ok: false,
+      error: "Use ?mode=transactions | closed | balance | sync",
     });
   } catch (err) {
     console.error("[sync-coinswitch]", err);
