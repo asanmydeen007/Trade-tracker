@@ -8,7 +8,7 @@
  * Optional:
  *   NOTION_TRADES_DB_ID
  */
-import * as ed from "@noble/ed25519";
+import nacl from "tweetnacl";
 
 const NOTION_DB_ID =
   process.env.NOTION_TRADES_DB_ID || "ec99900ead0d4744a1ecf60598e08f32";
@@ -42,7 +42,7 @@ function mapPair(symbol = "") {
   return SYMBOL_TO_PAIR[s] || s.replace("USDT", "") || "Other";
 }
 
-async function signRequest(method, path, query = {}) {
+function signRequest(method, path, query = {}) {
   const apiKey = process.env.COINSWITCH_API_KEY;
   const secretHex = process.env.COINSWITCH_API_SECRET;
 
@@ -50,7 +50,6 @@ async function signRequest(method, path, query = {}) {
     throw new Error("Missing COINSWITCH_API_KEY or COINSWITCH_API_SECRET");
   }
 
-  // Stable query string
   const qs = Object.keys(query)
     .sort()
     .map((k) => `${k}=${encodeURIComponent(query[k])}`)
@@ -62,12 +61,17 @@ async function signRequest(method, path, query = {}) {
 
   const epoch = String(Date.now());
   const message = method.toUpperCase() + decodedPath + epoch;
+  const messageBytes = new TextEncoder().encode(message);
 
-  const secretKey = Uint8Array.from(Buffer.from(secretHex, "hex"));
-  const signature = await ed.signAsync(
-    new TextEncoder().encode(message),
-    secretKey
-  );
+  // secret is 32-byte seed (hex). Expand to full 64-byte secretKey.
+  const seed = Uint8Array.from(Buffer.from(secretHex, "hex"));
+  if (seed.length !== 32) {
+    throw new Error(
+      `COINSWITCH_API_SECRET must be 32-byte hex (got ${seed.length} bytes)`
+    );
+  }
+  const keyPair = nacl.sign.keyPair.fromSeed(seed);
+  const signature = nacl.sign.detached(messageBytes, keyPair.secretKey);
 
   return {
     headers: {
@@ -92,7 +96,7 @@ async function fetchPnlTransactions(days = 30) {
     to_time: to,
   };
 
-  const { headers, url } = await signRequest(
+  const { headers, url } = signRequest(
     "GET",
     "/trade/api/v2/futures/transactions",
     query
@@ -104,7 +108,9 @@ async function fetchPnlTransactions(days = 30) {
   try {
     json = JSON.parse(text);
   } catch {
-    throw new Error(`CoinSwitch non-JSON response (${res.status}): ${text.slice(0, 300)}`);
+    throw new Error(
+      `CoinSwitch non-JSON response (${res.status}): ${text.slice(0, 300)}`
+    );
   }
 
   if (!res.ok) {
@@ -150,7 +156,9 @@ async function createNotionPage({ pair, pnl, date }) {
 
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(`Notion create failed (${res.status}): ${err.slice(0, 400)}`);
+    throw new Error(
+      `Notion create failed (${res.status}): ${err.slice(0, 400)}`
+    );
   }
 
   return res.json();
@@ -175,7 +183,6 @@ export default async function handler(req, res) {
 
     for (const tx of transactions) {
       const type = String(tx.type || "").toUpperCase().replace(/\s+/g, "");
-      // Accept P&L / PNL / REALISED_PNL style values
       if (type !== "P&L" && type !== "PNL" && !type.includes("PNL")) {
         skipped++;
         continue;
@@ -188,7 +195,6 @@ export default async function handler(req, res) {
       }
 
       const pair = mapPair(tx.symbol);
-      // Prefer any timestamp CoinSwitch might return; otherwise today
       let date = new Date().toISOString().slice(0, 10);
       if (tx.timestamp || tx.created_at || tx.time) {
         const ts = Number(tx.timestamp || tx.created_at || tx.time);
