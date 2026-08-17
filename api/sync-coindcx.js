@@ -193,6 +193,49 @@ export default async function handler(req, res) {
         details: true,
       });
 
+      // Futures filled orders (USDT + INR), timestamp in seconds
+      trials.futures_orders_filled = await coindcxPost(
+        "/exchange/v1/derivatives/futures/orders",
+        {
+          status: "filled,partially_filled,partially_cancelled,cancelled",
+          side: "buy",
+          page: "1",
+          size: "50",
+          margin_currency_short_name: ["USDT", "INR"],
+        },
+        { seconds: true }
+      );
+      trials.futures_orders_filled_sell = await coindcxPost(
+        "/exchange/v1/derivatives/futures/orders",
+        {
+          status: "filled,partially_filled,partially_cancelled,cancelled",
+          side: "sell",
+          page: "1",
+          size: "50",
+          margin_currency_short_name: ["USDT", "INR"],
+        },
+        { seconds: true }
+      );
+      trials.futures_positions = await coindcxPost(
+        "/exchange/v1/derivatives/futures/positions",
+        {
+          page: "1",
+          size: "50",
+          margin_currency_short_name: ["USDT", "INR"],
+        },
+        { seconds: true }
+      );
+      trials.futures_tx_inr = await coindcxPost(
+        "/exchange/v1/derivatives/futures/positions/transactions",
+        {
+          stage: "all",
+          page: "1",
+          size: "50",
+          margin_currency_short_name: ["INR", "USDT"],
+        },
+        { seconds: true }
+      );
+
       const summary = {};
       for (const [name, r] of Object.entries(trials)) {
         const list = asList(r.json);
@@ -229,6 +272,10 @@ export default async function handler(req, res) {
           futures_tx_ms: trials.futures_tx_ms.json || trials.futures_tx_ms.text,
           futures_tx_sec: trials.futures_tx_sec.json || trials.futures_tx_sec.text,
           balances: trials.balances.json || trials.balances.text,
+          futures_orders_filled: trials.futures_orders_filled?.json || trials.futures_orders_filled?.text,
+          futures_orders_filled_sell: trials.futures_orders_filled_sell?.json || trials.futures_orders_filled_sell?.text,
+          futures_positions: trials.futures_positions?.json || trials.futures_positions?.text,
+          futures_tx_inr: trials.futures_tx_inr?.json || trials.futures_tx_inr?.text,
         },
       });
     }
