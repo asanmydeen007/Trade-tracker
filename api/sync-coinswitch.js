@@ -1,6 +1,10 @@
 /**
- * Sync realised P&L from CoinSwitch Futures → Notion Trade PnL Tracker
- * Vendored tweetnacl (lib/nacl.cjs)
+ * CoinSwitch → Notion Trade PnL Tracker
+ * Pulls up to 1 year of history in 7-day windows.
+ *
+ * ?mode=year     → fetch last 365 days and write to Notion
+ * ?mode=transactions|closed|balance → probe endpoints
+ * ?days=7        → optional, used by year mode window size
  */
 import { createRequire } from "module";
 const require = createRequire(import.meta.url);
@@ -9,6 +13,8 @@ const nacl = require("../lib/nacl.cjs");
 const NOTION_DB_ID =
   process.env.NOTION_TRADES_DB_ID || "ec99900ead0d4744a1ecf60598e08f32";
 const BASE_URL = "https://coinswitch.co";
+const WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const YEAR_MS = 365 * 24 * 60 * 60 * 1000;
 
 const SYMBOL_TO_PAIR = {
   BTCUSDT: "Bitcoin",
@@ -41,10 +47,7 @@ function mapPair(symbol = "") {
 function signRequest(method, path, query = {}, bodyObj = null) {
   const apiKey = process.env.COINSWITCH_API_KEY;
   const secretHex = process.env.COINSWITCH_API_SECRET;
-
-  if (!apiKey || !secretHex) {
-    throw new Error("Missing COINSWITCH_API_KEY or COINSWITCH_API_SECRET");
-  }
+  if (!apiKey || !secretHex) throw new Error("Missing CoinSwitch keys");
 
   const pairs = Object.keys(query)
     .sort()
@@ -53,68 +56,53 @@ function signRequest(method, path, query = {}, bodyObj = null) {
   const fullPath = qs ? `${path}?${qs}` : path;
 
   const epoch = String(Date.now());
-  // CoinSwitch: METHOD + path_with_query + epoch  (body NOT included when epoch is used)
   const message = method.toUpperCase() + fullPath + epoch;
   const messageBytes = new TextEncoder().encode(message);
 
   const seed = Uint8Array.from(Buffer.from(secretHex.trim(), "hex"));
-  if (seed.length !== 32 && seed.length !== 64) {
-    throw new Error(
-      `COINSWITCH_API_SECRET unexpected length ${seed.length} bytes (want 32 seed or 64 expanded)`
-    );
-  }
-
   let secretKey;
   if (seed.length === 32) {
     secretKey = nacl.sign.keyPair.fromSeed(seed).secretKey;
+  } else if (seed.length === 64) {
+    secretKey = seed;
   } else {
-    secretKey = seed; // already 64-byte secret key
+    throw new Error(`Bad secret length ${seed.length}`);
   }
   const signature = nacl.sign.detached(messageBytes, secretKey);
 
-  const headers = {
-    "Content-Type": "application/json",
-    "X-AUTH-APIKEY": apiKey.trim(),
-    "X-AUTH-SIGNATURE": Buffer.from(signature).toString("hex"),
-    "X-AUTH-EPOCH": epoch,
-  };
-
   return {
-    headers,
+    headers: {
+      "Content-Type": "application/json",
+      "X-AUTH-APIKEY": apiKey.trim(),
+      "X-AUTH-SIGNATURE": Buffer.from(signature).toString("hex"),
+      "X-AUTH-EPOCH": epoch,
+    },
     url: BASE_URL + fullPath,
     body: bodyObj ? JSON.stringify(bodyObj) : undefined,
-    debug: {
-      method,
-      fullPath,
-      message: message.slice(0, 160),
-      epoch,
-      apiKeyPrefix: apiKey.trim().slice(0, 10) + "...",
-      secretBytes: seed.length,
-    },
+    debug: { method, fullPath, epoch },
   };
 }
 
-async function coinswitchFetch(method, path, query = {}, bodyObj = null) {
+async function csFetch(method, path, query = {}, bodyObj = null) {
   const signed = signRequest(method, path, query, bodyObj);
   const opts = { method, headers: signed.headers };
-  if (bodyObj && method !== "GET") {
-    opts.body = signed.body;
-  }
+  if (bodyObj && method !== "GET") opts.body = signed.body;
+
   const res = await fetch(signed.url, opts);
   const text = await res.text();
   let json;
   try {
     json = JSON.parse(text);
   } catch {
-    const err = new Error(`Non-JSON ${res.status}: ${text.slice(0, 300)}`);
-    err.debug = signed.debug;
-    throw err;
+    const e = new Error(`Non-JSON ${res.status}: ${text.slice(0, 250)}`);
+    e.debug = signed.debug;
+    throw e;
   }
   if (!res.ok) {
-    const err = new Error(`CoinSwitch ${res.status}: ${JSON.stringify(json).slice(0, 400)}`);
-    err.debug = signed.debug;
-    err.raw = json;
-    throw err;
+    const e = new Error(`CoinSwitch ${res.status}: ${JSON.stringify(json).slice(0, 350)}`);
+    e.debug = signed.debug;
+    e.raw = json;
+    throw e;
   }
   return { json, debug: signed.debug };
 }
@@ -142,10 +130,56 @@ async function createNotionPage({ pair, pnl, date }) {
     },
     body: JSON.stringify(body),
   });
-  if (!res.ok) {
-    throw new Error(`Notion ${(await res.text()).slice(0, 300)}`);
-  }
+  if (!res.ok) throw new Error(`Notion ${(await res.text()).slice(0, 300)}`);
   return res.json();
+}
+
+function isPnlType(type) {
+  const t = String(type || "").toUpperCase().replace(/\s+/g, "");
+  return t.includes("PNL") || t === "P&L" || t === "REALIZEDPNL" || t === "REALISEDPNL";
+}
+
+/** Fetch transactions for one 7-day window */
+async function fetchTxWindow(fromMs, toMs) {
+  try {
+    const { json } = await csFetch("GET", "/trade/api/v2/futures/transactions", {
+      exchange: "EXCHANGE_2",
+      from_time: fromMs,
+      to_time: toMs,
+      limit: 100,
+    });
+    return Array.isArray(json.data) ? json.data : [];
+  } catch (e) {
+    // Fallback: no time filter if window rejected
+    if (String(e.message).includes("400")) {
+      const { json } = await csFetch("GET", "/trade/api/v2/futures/transactions", {
+        exchange: "EXCHANGE_2",
+      });
+      return Array.isArray(json.data) ? json.data : [];
+    }
+    throw e;
+  }
+}
+
+/** Fetch closed orders for one window (POST) */
+async function fetchClosedWindow(fromMs, toMs) {
+  try {
+    const body = {
+      exchange: "EXCHANGE_2",
+      limit: 50,
+      from_time: fromMs,
+      to_time: toMs,
+    };
+    const { json } = await csFetch(
+      "POST",
+      "/trade/api/v2/futures/orders/closed",
+      {},
+      body
+    );
+    return json?.data?.orders || json?.data || [];
+  } catch {
+    return [];
+  }
 }
 
 export default async function handler(req, res) {
@@ -155,106 +189,139 @@ export default async function handler(req, res) {
 
   try {
     if (!process.env.COINSWITCH_API_KEY || !process.env.COINSWITCH_API_SECRET) {
-      return res.status(500).json({ ok: false, error: "Missing CoinSwitch env keys" });
+      return res.status(500).json({ ok: false, error: "Missing CoinSwitch keys" });
     }
     if (!process.env.NOTION_TOKEN) {
       return res.status(500).json({ ok: false, error: "Missing NOTION_TOKEN" });
     }
 
-    const mode = req.query?.mode || "transactions";
+    const mode = req.query?.mode || "year";
 
-    // Mode 1: minimal transactions (only exchange)
+    // --- probe modes ---
     if (mode === "transactions") {
-      const { json, debug } = await coinswitchFetch(
-        "GET",
-        "/trade/api/v2/futures/transactions",
-        { exchange: "EXCHANGE_2" }
-      );
-      const list = Array.isArray(json.data) ? json.data : [];
-      return res.status(200).json({
-        ok: true,
-        mode: "transactions",
-        fetched: list.length,
-        sample: list.slice(0, 5),
-        debug,
+      const { json, debug } = await csFetch("GET", "/trade/api/v2/futures/transactions", {
+        exchange: "EXCHANGE_2",
       });
+      const list = Array.isArray(json.data) ? json.data : [];
+      return res.status(200).json({ ok: true, mode, fetched: list.length, sample: list.slice(0, 5), debug });
     }
 
-    // Mode 2: closed orders (POST body)
     if (mode === "closed") {
       const body = { exchange: "EXCHANGE_2", limit: 50 };
-      const { json, debug } = await coinswitchFetch(
-        "POST",
-        "/trade/api/v2/futures/orders/closed",
-        {},
-        body
-      );
+      const { json, debug } = await csFetch("POST", "/trade/api/v2/futures/orders/closed", {}, body);
       const orders = json?.data?.orders || json?.data || [];
       return res.status(200).json({
         ok: true,
-        mode: "closed",
+        mode,
         fetched: Array.isArray(orders) ? orders.length : 0,
         sample: Array.isArray(orders) ? orders.slice(0, 3) : orders,
         debug,
       });
     }
 
-    // Mode 3: wallet balance (simple GET)
     if (mode === "balance") {
-      const { json, debug } = await coinswitchFetch(
-        "GET",
-        "/trade/api/v2/futures/wallet_balance",
-        { exchange: "EXCHANGE_2" }
-      );
-      return res.status(200).json({ ok: true, mode: "balance", data: json, debug });
+      const { json, debug } = await csFetch("GET", "/trade/api/v2/futures/wallet_balance", {
+        exchange: "EXCHANGE_2",
+      });
+      return res.status(200).json({ ok: true, mode, data: json, debug });
     }
 
-    // Mode 4: full sync — closed orders with realised_pnl → Notion
-    if (mode === "sync") {
-      const body = { exchange: "EXCHANGE_2", limit: 50 };
-      const { json, debug } = await coinswitchFetch(
-        "POST",
-        "/trade/api/v2/futures/orders/closed",
-        {},
-        body
-      );
-      const orders = json?.data?.orders || [];
-      const results = [];
-      let created = 0;
-      let skipped = 0;
+    // --- YEAR sync (default) ---
+    // Walk back up to 365 days in 7-day windows
+    const now = Date.now();
+    const start = now - YEAR_MS;
+    const allPnl = []; // { pair, pnl, date, source, id }
+    const seen = new Set();
+    let windows = 0;
+    let txTotal = 0;
+    let orderTotal = 0;
+    const errors = [];
 
-      for (const o of orders) {
-        const pnl = parseFloat(o.realised_pnl || o.realized_pnl || 0);
-        if (!pnl || pnl === 0) {
-          skipped++;
-          continue;
+    for (let to = now; to > start; to -= WINDOW_MS) {
+      const from = Math.max(start, to - WINDOW_MS);
+      windows++;
+
+      // 1) Transactions
+      try {
+        const txs = await fetchTxWindow(from, to);
+        txTotal += txs.length;
+        for (const tx of txs) {
+          if (!isPnlType(tx.type)) continue;
+          const amount = parseFloat(tx.amount);
+          if (!amount || Number.isNaN(amount)) continue;
+          const id = tx.transaction_id || `${tx.symbol}-${tx.amount}-${tx.type}`;
+          if (seen.has(id)) continue;
+          seen.add(id);
+          let date = new Date(to).toISOString().slice(0, 10);
+          const ts = Number(tx.timestamp || tx.created_at || tx.time);
+          if (ts > 1e11) date = new Date(ts).toISOString().slice(0, 10);
+          allPnl.push({
+            pair: mapPair(tx.symbol),
+            pnl: amount,
+            date,
+            source: "tx",
+            id,
+          });
         }
-        const pair = mapPair(o.symbol);
-        const ts = Number(o.updated_at || o.created_at || Date.now());
-        const date = new Date(ts > 1e11 ? ts : Date.now()).toISOString().slice(0, 10);
-        try {
-          await createNotionPage({ pair, pnl, date });
-          created++;
-          results.push({ pair, pnl, date, order_id: o.order_id });
-        } catch (e) {
-          results.push({ error: e.message, symbol: o.symbol });
-        }
+      } catch (e) {
+        errors.push({ window: [from, to], error: e.message });
       }
 
-      return res.status(200).json({
-        ok: true,
-        mode: "sync",
-        fetched: orders.length,
-        created,
-        skipped,
-        results,
-        debug,
-      });
+      // 2) Closed orders with realised_pnl
+      try {
+        const orders = await fetchClosedWindow(from, to);
+        orderTotal += Array.isArray(orders) ? orders.length : 0;
+        for (const o of orders || []) {
+          const amount = parseFloat(o.realised_pnl || o.realized_pnl || 0);
+          if (!amount || Number.isNaN(amount)) continue;
+          const id = o.order_id || `order-${o.symbol}-${o.updated_at}`;
+          if (seen.has(id)) continue;
+          seen.add(id);
+          const ts = Number(o.updated_at || o.created_at || to);
+          const date = new Date(ts > 1e11 ? ts : to).toISOString().slice(0, 10);
+          allPnl.push({
+            pair: mapPair(o.symbol),
+            pnl: amount,
+            date,
+            source: "order",
+            id,
+          });
+        }
+      } catch (e) {
+        errors.push({ window: [from, to], orderError: e.message });
+      }
+
+      // Avoid rate limits
+      await new Promise((r) => setTimeout(r, 200));
     }
 
-    return res.status(400).json({
-      ok: false,
-      error: "Use ?mode=transactions | closed | balance | sync",
+    // Write to Notion
+    let created = 0;
+    let failed = 0;
+    const results = [];
+    for (const row of allPnl) {
+      try {
+        await createNotionPage(row);
+        created++;
+        results.push({ pair: row.pair, pnl: row.pnl, date: row.date, source: row.source });
+      } catch (e) {
+        failed++;
+        results.push({ error: e.message, pair: row.pair, pnl: row.pnl });
+      }
+    }
+
+    return res.status(200).json({
+      ok: true,
+      mode: "year",
+      windows,
+      txFetched: txTotal,
+      ordersFetched: orderTotal,
+      uniquePnl: allPnl.length,
+      created,
+      failed,
+      results: results.slice(0, 50), // cap response size
+      errors: errors.slice(0, 10),
+      syncedAt: new Date().toISOString(),
     });
   } catch (err) {
     console.error("[sync-coinswitch]", err);
