@@ -2,7 +2,9 @@
  * CoinDCX → Notion
  * Env: COINDCX_API_KEY, COINDCX_API_SECRET, NOTION_TOKEN
  *
- * ?mode=probe | sync | month&month=YYYY-MM
+ * ?mode=probe
+ * ?mode=sync   → pull working futures endpoints + write PnL to Notion
+ * ?mode=month&month=2026-08
  */
 import crypto from "crypto";
 
@@ -12,10 +14,11 @@ const BASE_URL = "https://api.coindcx.com";
 
 const SYMBOL_TO_PAIR = {
   BTCUSDT: "Bitcoin", BTC_USDT: "Bitcoin", "B-BTC_USDT": "Bitcoin",
-  ETHUSDT: "Eth", ETH_USDT: "Eth",
-  SOLUSDT: "Solana", SOL_USDT: "Solana",
+  ETHUSDT: "Eth", ETH_USDT: "Eth", "B-ETH_USDT": "Eth",
+  SOLUSDT: "Solana", SOL_USDT: "Solana", "B-SOL_USDT": "Solana",
   XAGUSDT: "Silver", XAG_USDT: "Silver", "B-XAG_USDT": "Silver",
-  XRPUSDT: "XRP", ADAUSDT: "ADA", AVAXUSDT: "AVAX", BNBUSDT: "BNB", DOGEUSDT: "DOGE",
+  XRPUSDT: "XRP", "B-XRP_USDT": "XRP",
+  ADAUSDT: "ADA", AVAXUSDT: "AVAX", BNBUSDT: "BNB", DOGEUSDT: "DOGE",
 };
 
 function mapPair(symbol = "") {
@@ -26,16 +29,8 @@ function mapPair(symbol = "") {
   return cleaned.replace("USDT", "").replace("INR", "") || "Other";
 }
 
-/** Compact JSON — CoinDCX signs this exact string */
 function compactJson(obj) {
   return JSON.stringify(obj);
-}
-
-function signBody(bodyObj, secret) {
-  return crypto
-    .createHmac("sha256", secret.trim())
-    .update(compactJson(bodyObj))
-    .digest("hex");
 }
 
 async function coindcxPost(path, body = {}, opts = {}) {
@@ -43,7 +38,6 @@ async function coindcxPost(path, body = {}, opts = {}) {
   const secret = process.env.COINDCX_API_SECRET;
   if (!key || !secret) throw new Error("Missing COINDCX_API_KEY or COINDCX_API_SECRET");
 
-  // Some futures endpoints want seconds; default ms
   const ts = opts.seconds ? Math.floor(Date.now() / 1000) : Date.now();
   const payload = { ...body, timestamp: ts };
   const bodyStr = compactJson(payload);
@@ -75,8 +69,17 @@ async function coindcxPost(path, body = {}, opts = {}) {
     json,
     text: json ? null : text.slice(0, 500),
     path,
-    payloadKeys: Object.keys(payload),
   };
+}
+
+function asList(json) {
+  if (Array.isArray(json)) return json;
+  if (!json || typeof json !== "object") return [];
+  if (Array.isArray(json.data)) return json.data;
+  if (Array.isArray(json.trades)) return json.trades;
+  if (Array.isArray(json.transactions)) return json.transactions;
+  if (Array.isArray(json.orders)) return json.orders;
+  return [];
 }
 
 async function createNotionPage({ pair, pnl, date, name }) {
@@ -100,7 +103,7 @@ async function createNotionPage({ pair, pnl, date, name }) {
     },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`Notion ${(await res.text()).slice(0, 250)}`);
+  if (!res.ok) throw new Error(`Notion ${(await res.text()).slice(0, 300)}`);
   return res.json();
 }
 
@@ -119,14 +122,162 @@ function inMonth(ts, month) {
   return ms >= from && ms <= to;
 }
 
-function asList(json) {
-  if (Array.isArray(json)) return json;
-  if (!json || typeof json !== "object") return [];
-  if (Array.isArray(json.data)) return json.data;
-  if (Array.isArray(json.trades)) return json.trades;
-  if (Array.isArray(json.transactions)) return json.transactions;
-  if (Array.isArray(json.orders)) return json.orders;
-  return [];
+function toDate(ts) {
+  const n = Number(ts);
+  if (!n) return new Date().toISOString().slice(0, 10);
+  const ms = n < 1e12 ? n * 1000 : n;
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+/** Collect rows from the same endpoints that probe uses successfully */
+async function collectRows(month) {
+  const rows = [];
+  const seen = new Set();
+  const errors = [];
+  const meta = {};
+
+  // 1) Futures filled/cancelled orders — buy
+  const buy = await coindcxPost(
+    "/exchange/v1/derivatives/futures/orders",
+    {
+      status: "filled,partially_filled,partially_cancelled,cancelled",
+      side: "buy",
+      page: "1",
+      size: "100",
+      margin_currency_short_name: ["USDT", "INR"],
+    },
+    { seconds: true }
+  );
+  meta.buy = { status: buy.status, ok: buy.ok, count: asList(buy.json).length };
+  if (!buy.ok) errors.push({ buy: buy.json || buy.text });
+  else {
+    for (const o of asList(buy.json)) {
+      const ts = o.updated_at || o.created_at || o.timestamp;
+      if (month && !inMonth(ts, month)) continue;
+      // Prefer realised pnl fields; else 0 (order list may not have PnL)
+      const pnl = parseFloat(
+        o.realised_pnl ?? o.realized_pnl ?? o.pnl ?? o.profit ?? 0
+      );
+      const pair = mapPair(o.pair || o.symbol || "");
+      const id = String(o.id || `buy-${o.pair}-${ts}`);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      rows.push({
+        pair,
+        pnl,
+        date: toDate(ts),
+        name: pair,
+        id,
+        source: "futures_order_buy",
+        status: o.status,
+        side: o.side,
+      });
+    }
+  }
+
+  // 2) Futures orders — sell
+  const sell = await coindcxPost(
+    "/exchange/v1/derivatives/futures/orders",
+    {
+      status: "filled,partially_filled,partially_cancelled,cancelled",
+      side: "sell",
+      page: "1",
+      size: "100",
+      margin_currency_short_name: ["USDT", "INR"],
+    },
+    { seconds: true }
+  );
+  meta.sell = { status: sell.status, ok: sell.ok, count: asList(sell.json).length };
+  if (!sell.ok) errors.push({ sell: sell.json || sell.text });
+  else {
+    for (const o of asList(sell.json)) {
+      const ts = o.updated_at || o.created_at || o.timestamp;
+      if (month && !inMonth(ts, month)) continue;
+      const pnl = parseFloat(
+        o.realised_pnl ?? o.realized_pnl ?? o.pnl ?? o.profit ?? 0
+      );
+      const pair = mapPair(o.pair || o.symbol || "");
+      const id = String(o.id || `sell-${o.pair}-${ts}`);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      rows.push({
+        pair,
+        pnl,
+        date: toDate(ts),
+        name: pair,
+        id,
+        source: "futures_order_sell",
+        status: o.status,
+        side: o.side,
+      });
+    }
+  }
+
+  // 3) Futures position transactions (amount = PnL) — best source for realised PnL
+  const tx = await coindcxPost(
+    "/exchange/v1/derivatives/futures/positions/transactions",
+    {
+      stage: "all",
+      page: "1",
+      size: "100",
+      margin_currency_short_name: ["USDT", "INR"],
+    },
+    { seconds: true }
+  );
+  meta.tx = { status: tx.status, ok: tx.ok, count: asList(tx.json).length };
+  if (!tx.ok) errors.push({ tx: tx.json || tx.text });
+  else {
+    for (const t of asList(tx.json)) {
+      const ts = t.created_at || t.updated_at || t.timestamp;
+      if (month && !inMonth(ts, month)) continue;
+      const stage = String(t.stage || "").toLowerCase();
+      if (stage === "funding") continue;
+      const pnl = parseFloat(t.amount ?? t.realised_pnl ?? t.pnl ?? 0);
+      const pair = mapPair(t.pair || t.symbol || "");
+      const id = String(t.id || t.parent_id || `tx-${t.position_id}-${ts}-${pnl}`);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      rows.push({
+        pair,
+        pnl,
+        date: toDate(ts),
+        name: pair,
+        id,
+        source: "futures_tx",
+        stage,
+      });
+    }
+  }
+
+  // 4) Spot trade history (backup)
+  const spot = await coindcxPost("/exchange/v1/orders/trade_history", {
+    limit: 200,
+    sort: "desc",
+  });
+  meta.spot = { status: spot.status, ok: spot.ok, count: asList(spot.json).length };
+  if (spot.ok) {
+    for (const t of asList(spot.json)) {
+      const ts = t.timestamp || t.T || t.time || t.created_at;
+      if (month && !inMonth(ts, month)) continue;
+      const pnl = parseFloat(
+        t.realised_pnl ?? t.realized_pnl ?? t.pnl ?? t.profit ?? 0
+      );
+      const pair = mapPair(t.symbol || t.market || t.pair || "");
+      const id = String(t.id || t.trade_id || `spot-${t.order_id}-${ts}`);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      rows.push({
+        pair,
+        pnl,
+        date: toDate(ts),
+        name: pair,
+        id,
+        source: "spot",
+      });
+    }
+  }
+
+  return { rows, errors, meta };
 }
 
 export default async function handler(req, res) {
@@ -135,14 +286,10 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(204).end();
 
   try {
-    const key = process.env.COINDCX_API_KEY;
-    const secret = process.env.COINDCX_API_SECRET;
-    if (!key || !secret) {
+    if (!process.env.COINDCX_API_KEY || !process.env.COINDCX_API_SECRET) {
       return res.status(500).json({
         ok: false,
         error: "Missing COINDCX_API_KEY or COINDCX_API_SECRET",
-        hasKey: !!key,
-        hasSecret: !!secret,
       });
     }
 
@@ -150,133 +297,16 @@ export default async function handler(req, res) {
     const month = (req.query?.month || "").trim();
 
     if (mode === "probe") {
-      // Try several endpoints to see which auth/data works
-      const trials = {};
-
-      trials.user_info = await coindcxPost("/exchange/v1/users/info", {});
-      trials.balances = await coindcxPost("/exchange/v1/users/balances", {});
-      trials.spot_trades = await coindcxPost("/exchange/v1/orders/trade_history", {
-        limit: 50,
-        sort: "desc",
-      });
-      trials.spot_trades_from_ts = await coindcxPost(
-        "/exchange/v1/orders/trade_history",
-        {
-          limit: 50,
-          from_timestamp: Date.now() - 90 * 24 * 60 * 60 * 1000,
-          to_timestamp: Date.now(),
-        }
-      );
-      trials.active_orders = await coindcxPost("/exchange/v1/orders/active_orders", {});
-      trials.futures_tx_ms = await coindcxPost(
-        "/exchange/v1/derivatives/futures/positions/transactions",
-        {
-          stage: "all",
-          page: "1",
-          size: "50",
-          margin_currency_short_name: ["USDT"],
-        }
-      );
-      trials.futures_tx_sec = await coindcxPost(
-        "/exchange/v1/derivatives/futures/positions/transactions",
-        {
-          stage: "all",
-          page: "1",
-          size: "50",
-          margin_currency_short_name: ["USDT"],
-        },
-        { seconds: true }
-      );
-      trials.margin_orders = await coindcxPost("/exchange/v1/margin/fetch_orders", {
-        status: "close",
-        size: 50,
-        details: true,
-      });
-
-      // Futures filled orders (USDT + INR), timestamp in seconds
-      trials.futures_orders_filled = await coindcxPost(
-        "/exchange/v1/derivatives/futures/orders",
-        {
-          status: "filled,partially_filled,partially_cancelled,cancelled",
-          side: "buy",
-          page: "1",
-          size: "50",
-          margin_currency_short_name: ["USDT", "INR"],
-        },
-        { seconds: true }
-      );
-      trials.futures_orders_filled_sell = await coindcxPost(
-        "/exchange/v1/derivatives/futures/orders",
-        {
-          status: "filled,partially_filled,partially_cancelled,cancelled",
-          side: "sell",
-          page: "1",
-          size: "50",
-          margin_currency_short_name: ["USDT", "INR"],
-        },
-        { seconds: true }
-      );
-      trials.futures_positions = await coindcxPost(
-        "/exchange/v1/derivatives/futures/positions",
-        {
-          page: "1",
-          size: "50",
-          margin_currency_short_name: ["USDT", "INR"],
-        },
-        { seconds: true }
-      );
-      trials.futures_tx_inr = await coindcxPost(
-        "/exchange/v1/derivatives/futures/positions/transactions",
-        {
-          stage: "all",
-          page: "1",
-          size: "50",
-          margin_currency_short_name: ["INR", "USDT"],
-        },
-        { seconds: true }
-      );
-
-      const summary = {};
-      for (const [name, r] of Object.entries(trials)) {
-        const list = asList(r.json);
-        summary[name] = {
-          status: r.status,
-          ok: r.ok,
-          count: list.length,
-          message:
-            r.json?.message ||
-            r.json?.error ||
-            r.json?.code ||
-            (typeof r.json === "string" ? r.json : null) ||
-            r.text,
-          sampleKeys:
-            list[0] && typeof list[0] === "object"
-              ? Object.keys(list[0]).slice(0, 12)
-              : r.json && typeof r.json === "object"
-                ? Object.keys(r.json).slice(0, 12)
-                : null,
-        };
-      }
-
+      const { rows, errors, meta } = await collectRows(null);
       return res.status(200).json({
         ok: true,
         source: "coindcx",
         mode: "probe",
-        keyPrefix: key.trim().slice(0, 8) + "...",
-        secretLen: secret.trim().length,
-        summary,
-        // raw samples for the most useful endpoints
-        raw: {
-          user_info: trials.user_info.json || trials.user_info.text,
-          spot_trades: trials.spot_trades.json || trials.spot_trades.text,
-          futures_tx_ms: trials.futures_tx_ms.json || trials.futures_tx_ms.text,
-          futures_tx_sec: trials.futures_tx_sec.json || trials.futures_tx_sec.text,
-          balances: trials.balances.json || trials.balances.text,
-          futures_orders_filled: trials.futures_orders_filled?.json || trials.futures_orders_filled?.text,
-          futures_orders_filled_sell: trials.futures_orders_filled_sell?.json || trials.futures_orders_filled_sell?.text,
-          futures_positions: trials.futures_positions?.json || trials.futures_positions?.text,
-          futures_tx_inr: trials.futures_tx_inr?.json || trials.futures_tx_inr?.text,
-        },
+        meta,
+        totalRows: rows.length,
+        withPnl: rows.filter((r) => r.pnl).length,
+        sample: rows.slice(0, 10),
+        errors,
       });
     }
 
@@ -284,129 +314,25 @@ export default async function handler(req, res) {
       if (!process.env.NOTION_TOKEN) {
         return res.status(500).json({ ok: false, error: "Missing NOTION_TOKEN" });
       }
-
-      const rows = [];
-      const seen = new Set();
-      const errors = [];
-
-      const spot = await coindcxPost("/exchange/v1/orders/trade_history", {
-        limit: 500,
-        sort: "desc",
-      });
-      if (spot.ok) {
-        for (const t of asList(spot.json)) {
-          const ts = Number(t.timestamp || t.T || t.time || t.created_at || 0);
-          if (month && !inMonth(ts, month)) continue;
-          const pair = mapPair(t.symbol || t.market || t.pair || "");
-          const pnl = parseFloat(
-            t.realised_pnl ?? t.realized_pnl ?? t.pnl ?? t.profit ?? 0
-          );
-          const id = String(t.id || t.trade_id || `spot-${t.order_id}-${ts}`);
-          if (seen.has(id)) continue;
-          seen.add(id);
-          const ms = ts < 1e12 ? ts * 1000 : ts;
-          rows.push({
-            pair,
-            pnl: pnl || 0,
-            date: new Date(ms || Date.now()).toISOString().slice(0, 10),
-            name: pair,
-            id,
-            source: "spot",
-          });
-        }
-      } else {
-        errors.push({ spot: spot.json || spot.text });
+      if (mode === "month" && !/^\d{4}-\d{2}$/.test(month)) {
+        return res.status(400).json({
+          ok: false,
+          error: "Use month=YYYY-MM e.g. month=2026-08",
+        });
       }
 
-      // Futures transactions — try ms then sec
-      let fut = await coindcxPost(
-        "/exchange/v1/derivatives/futures/positions/transactions",
-        {
-          stage: "all",
-          page: "1",
-          size: "100",
-          margin_currency_short_name: ["USDT"],
-        }
+      const { rows, errors, meta } = await collectRows(
+        mode === "month" ? month : null
       );
-      if (!fut.ok) {
-        fut = await coindcxPost(
-          "/exchange/v1/derivatives/futures/positions/transactions",
-          {
-            stage: "all",
-            page: "1",
-            size: "100",
-            margin_currency_short_name: ["USDT"],
-          },
-          { seconds: true }
-        );
-      }
-      if (fut.ok) {
-        for (const t of asList(fut.json)) {
-          const ts = Number(t.created_at || t.timestamp || t.updated_at || 0);
-          if (month && !inMonth(ts, month)) continue;
-          const pair = mapPair(t.pair || t.symbol || t.market || "");
-          const pnl = parseFloat(t.amount ?? t.realised_pnl ?? t.pnl ?? 0);
-          const stage = String(t.stage || "").toLowerCase();
-          if (stage === "funding") continue; // skip funding fees
-          const id = String(t.id || `fut-${t.position_id}-${ts}-${pnl}`);
-          if (seen.has(id)) continue;
-          seen.add(id);
-          const ms = ts < 1e12 ? ts * 1000 : ts;
-          rows.push({
-            pair,
-            pnl: pnl || 0,
-            date: new Date(ms || Date.now()).toISOString().slice(0, 10),
-            name: pair,
-            id,
-            source: "futures",
-          });
-        }
-      } else {
-        errors.push({ futures: fut.json || fut.text });
-      }
 
-      // Margin closed orders with pnl
-      const margin = await coindcxPost("/exchange/v1/margin/fetch_orders", {
-        status: "close",
-        size: 100,
-        details: true,
-      });
-      if (margin.ok) {
-        for (const t of asList(margin.json)) {
-          const ts = Number(t.updated_at || t.created_at || t.timestamp || 0);
-          if (month && !inMonth(ts, month)) continue;
-          const pair = mapPair(t.market || t.pair || t.symbol || "");
-          const pnl = parseFloat(t.pnl ?? t.realised_pnl ?? 0);
-          const id = String(t.id || t.order_id || `margin-${ts}`);
-          if (seen.has(id)) continue;
-          seen.add(id);
-          const ms = ts < 1e12 ? ts * 1000 : ts;
-          rows.push({
-            pair,
-            pnl: pnl || 0,
-            date: new Date(ms || Date.now()).toISOString().slice(0, 10),
-            name: pair,
-            id,
-            source: "margin",
-          });
-        }
-      } else {
-        errors.push({ margin: margin.json || margin.text });
-      }
+      // Prefer writing rows that have PnL; if none have PnL, write filled orders as 0? 
+      // User asked realised pnl only earlier — write non-zero only, but if all zero report clearly
+      const toWrite = rows.filter((r) => r.pnl !== 0 && !Number.isNaN(r.pnl));
+      // If transactions gave nothing but we have filled orders, still try write non-zero only
 
       let created = 0;
       const results = [];
-      for (const row of rows) {
-        if (!row.pnl) {
-          results.push({
-            skipped: true,
-            reason: "zero_pnl",
-            pair: row.pair,
-            date: row.date,
-            source: row.source,
-          });
-          continue;
-        }
+      for (const row of toWrite) {
         try {
           await createNotionPage(row);
           created++;
@@ -417,7 +343,7 @@ export default async function handler(req, res) {
             source: row.source,
           });
         } catch (e) {
-          results.push({ error: e.message, pair: row.pair });
+          results.push({ error: e.message, pair: row.pair, pnl: row.pnl });
         }
       }
 
@@ -426,11 +352,13 @@ export default async function handler(req, res) {
         source: "coindcx",
         mode,
         month: month || null,
-        unique: rows.length,
-        withPnl: rows.filter((r) => r.pnl).length,
+        meta,
+        fetched: rows.length,
+        withPnl: toWrite.length,
         created,
-        results: results.slice(0, 50),
-        errors: errors.slice(0, 8),
+        results: results.slice(0, 60),
+        skippedZero: rows.length - toWrite.length,
+        errors,
         syncedAt: new Date().toISOString(),
       });
     }
